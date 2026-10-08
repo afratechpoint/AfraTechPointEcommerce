@@ -5,23 +5,43 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const shopUrl = process.env.NEXT_PUBLIC_SHOP_URL || 'https://afratechpoint.shop'
   const lastModified = new Date()
 
-  // Base routes
-  const routes = [
-    '',
-    '/shop',
-    '/contact',
-    '/about',
-    '/terms',
-  ].map((route) => ({
-    url: `${shopUrl}${route}`,
-    lastModified,
-    changeFrequency: 'daily' as const,
-    priority: route === '' ? 1 : 0.8,
-  }))
+  // Base routes with optimal SEO priority weights
+  const routes: MetadataRoute.Sitemap = [
+    {
+      url: `${shopUrl}`,
+      lastModified,
+      changeFrequency: 'daily',
+      priority: 1.0,
+    },
+    {
+      url: `${shopUrl}/shop`,
+      lastModified,
+      changeFrequency: 'daily',
+      priority: 0.9,
+    },
+    {
+      url: `${shopUrl}/about`,
+      lastModified,
+      changeFrequency: 'monthly',
+      priority: 0.7,
+    },
+    {
+      url: `${shopUrl}/contact`,
+      lastModified,
+      changeFrequency: 'monthly',
+      priority: 0.7,
+    },
+    {
+      url: `${shopUrl}/terms`,
+      lastModified,
+      changeFrequency: 'yearly',
+      priority: 0.5,
+    },
+  ];
 
   try {
     const products = await storage.getProducts()
-    const productRoutes = products.map((product: any) => {
+    const productRoutes: MetadataRoute.Sitemap = products.map((product: any) => {
       let productDate = lastModified;
       if (product.updatedAt) {
         try {
@@ -35,7 +55,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         url: `${shopUrl}/shop/${product.id}`,
         lastModified: productDate,
         changeFrequency: 'weekly' as const,
-        priority: 0.6,
+        priority: 0.85,
       };
     })
 

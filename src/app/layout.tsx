@@ -78,20 +78,62 @@ export async function generateMetadata(): Promise<Metadata> {
   const logoImage = settings.logoUrl || `${shopUrl}/logo.png`;
   // Use a clean, cacheable version of the logo for OG (no ImageKit transforms that might be blocked)
   const ogImage = logoImage.startsWith("http") ? logoImage : `${shopUrl}${logoImage}`;
+  const siteDescription =
+    settings.shortDescription ||
+    "Afra Tech Point - Your premier destination in Bangladesh for authentic smartphones, smartwatches, wireless earbuds, and cutting-edge tech gadgets with fast home delivery.";
 
   return {
-    title: settings.storeName,
-    description: settings.shortDescription,
+    metadataBase: new URL(shopUrl),
+    title: {
+      default: `${settings.storeName} | Best Online Tech & Gadget Shop in Bangladesh`,
+      template: `%s | ${settings.storeName}`,
+    },
+    description: siteDescription,
+    keywords: [
+      "Afra Tech Point",
+      "AfraTechPoint",
+      "afratechpoint.shop",
+      "tech shop bangladesh",
+      "gadget shop bd",
+      "best online tech shop bangladesh",
+      "smartwatch price in bd",
+      "wireless earbuds bangladesh",
+      "buy gadgets online dhaka",
+      "genuine electronic accessories bd",
+      "bluetooth headphones bangladesh",
+      "আফরা টেক পয়েন্ট",
+      "গ্যাজেট শপ বাংলাদেশ",
+      "অনলাইন গ্যাজেট শপ",
+    ],
     manifest: "/api/manifest/shop",
     icons: {
       icon: settings.logoUrl || "/logo.png",
       apple: settings.logoUrl || "/logo.png",
     },
+    alternates: {
+      canonical: "/",
+    },
+    robots: {
+      index: true,
+      follow: true,
+      googleBot: {
+        index: true,
+        follow: true,
+        "max-video-preview": -1,
+        "max-image-preview": "large",
+        "max-snippet": -1,
+      },
+    },
+    verification: {
+      google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || undefined,
+    },
     openGraph: {
       type: "website",
+      locale: "en_US",
+      alternateLocale: ["bn_BD"],
       siteName: settings.storeName,
-      title: settings.storeName,
-      description: settings.shortDescription || `Shop the latest electronics at ${settings.storeName}`,
+      title: `${settings.storeName} | Best Online Tech & Gadget Shop in Bangladesh`,
+      description: siteDescription,
       url: shopUrl,
       images: [
         {
@@ -104,8 +146,8 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     twitter: {
       card: "summary_large_image",
-      title: settings.storeName,
-      description: settings.shortDescription || `Shop the latest electronics at ${settings.storeName}`,
+      title: `${settings.storeName} | Best Online Tech & Gadget Shop in Bangladesh`,
+      description: siteDescription,
       images: [ogImage],
     },
   };
@@ -153,6 +195,50 @@ export default async function RootLayout({
             href={`${settings.banners[0].imageUrl}${settings.banners[0].imageUrl.includes('?') ? '&' : '?'}tr=w-800,f-auto,q-80`}
           />
         )}
+        {/* Structured Data (JSON-LD) for Search Engines */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify([
+              {
+                "@context": "https://schema.org",
+                "@type": "WebSite",
+                name: settings.storeName || "Afra Tech Point",
+                alternateName: ["AfraTechPoint", "আফরা টেক পয়েন্ট"],
+                url: process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop",
+                description: settings.shortDescription,
+                potentialAction: {
+                  "@type": "SearchAction",
+                  target: {
+                    "@type": "EntryPoint",
+                    urlTemplate: `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/shop?q={search_term_string}`,
+                  },
+                  "query-input": "required name=search_term_string",
+                },
+              },
+              {
+                "@context": "https://schema.org",
+                "@type": "Store",
+                name: settings.storeName || "Afra Tech Point",
+                url: process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop",
+                logo: settings.logoUrl || `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/logo.png`,
+                image: settings.logoUrl || `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/logo.png`,
+                description: settings.shortDescription,
+                telephone: settings.contactPhone,
+                email: settings.contactEmail,
+                address: {
+                  "@type": "PostalAddress",
+                  addressCountry: "BD",
+                  addressLocality: "Dhaka",
+                  streetAddress: settings.contactAddress || "Dhaka, Bangladesh",
+                },
+                priceRange: "৳৳",
+                currenciesAccepted: "BDT",
+                paymentAccepted: "Cash on Delivery, bKash, Nagad, Rocket",
+              },
+            ]),
+          }}
+        />
         <style
           suppressHydrationWarning
           dangerouslySetInnerHTML={{

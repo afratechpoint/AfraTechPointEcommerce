@@ -23,6 +23,11 @@ export default async function Home() {
 
   return (
     <div className="flex flex-col w-full">
+      {/* Semantic H1 for search engines & accessibility */}
+      <h1 className="sr-only">
+        Afra Tech Point - Best Online Tech & Gadget Shop in Bangladesh
+      </h1>
+
       {/* Constraints for centered content */}
       <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8">
         {/* Navigation Bar — client component (needs useCart / useAuth) */}

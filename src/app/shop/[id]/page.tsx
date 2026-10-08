@@ -43,10 +43,22 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: `${title} | ${siteName}`,
       description,
-      openGraph: {
-        type: "article",
-        siteName,
+      keywords: [
         title,
+        `${title} price in bangladesh`,
+        `${title} bd`,
+        product.category || "Gadgets",
+        "Afra Tech Point",
+        "buy online bangladesh",
+        "authentic gadgets bd",
+      ],
+      alternates: {
+        canonical: `${SHOP_URL}/shop/${id}`,
+      },
+      openGraph: {
+        type: "website",
+        siteName,
+        title: `${title} | ${siteName}`,
         description,
         url: `${SHOP_URL}/shop/${id}`,
         images: [
@@ -60,12 +72,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       },
       twitter: {
         card: "summary_large_image",
-        title,
+        title: `${title} | ${siteName}`,
         description,
         images: [imageUrl],
       },
       other: {
-        // Rich product snippet for Facebook / WhatsApp
+        // Rich product snippet for Facebook / WhatsApp / Google
         "og:price:amount": String(price),
         "og:price:currency": currency,
       },
@@ -76,6 +88,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: "Product | Afra Tech Point",
       description: "Shop electronics at Afra Tech Point.",
+      alternates: {
+        canonical: `${SHOP_URL}/shop/${id}`,
+      },
       openGraph: {
         title: "Afra Tech Point",
         description: "Shop electronics at Afra Tech Point.",
@@ -86,5 +101,108 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function ProductDetailPage({ params }: Props) {
-  return <ProductDetailClient />;
+  const { id } = await params;
+  let product: any = null;
+  try {
+    product = await storage.getProductById(id);
+  } catch (e) {
+    // Client component handles not found state gracefully
+  }
+
+  let jsonLd: any = null;
+  let breadcrumbLd: any = null;
+
+  if (product) {
+    const price = product.salePrice ?? product.regularPrice ?? product.price ?? 0;
+    const isOutOfStock = product.stock !== undefined && Number(product.stock) <= 0;
+    let mainImage = product.image || `${SHOP_URL}/logo.png`;
+    if (mainImage && !mainImage.startsWith("http")) {
+      mainImage = `${SHOP_URL}${mainImage.startsWith("/") ? "" : "/"}${mainImage}`;
+    }
+
+    const allImages: string[] = [mainImage];
+    if (Array.isArray(product.images)) {
+      product.images.forEach((img: string) => {
+        if (img) {
+          const fullImg = img.startsWith("http") ? img : `${SHOP_URL}${img.startsWith("/") ? "" : "/"}${img}`;
+          if (!allImages.includes(fullImg)) allImages.push(fullImg);
+        }
+      });
+    }
+
+    jsonLd = {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: product.name,
+      image: allImages,
+      description: product.description || `Buy ${product.name} at Afra Tech Point Bangladesh.`,
+      sku: product.id,
+      brand: {
+        "@type": "Brand",
+        name: product.brand || "Afra Tech Point",
+      },
+      offers: {
+        "@type": "Offer",
+        url: `${SHOP_URL}/shop/${id}`,
+        priceCurrency: "BDT",
+        price: Number(price),
+        priceValidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+        itemCondition: "https://schema.org/NewCondition",
+        availability: isOutOfStock ? "https://schema.org/OutOfStock" : "https://schema.org/InStock",
+        seller: {
+          "@type": "Organization",
+          name: "Afra Tech Point",
+        },
+      },
+    };
+
+    breadcrumbLd = {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        {
+          "@type": "ListItem",
+          position: 1,
+          name: "Home",
+          item: SHOP_URL,
+        },
+        {
+          "@type": "ListItem",
+          position: 2,
+          name: "Shop",
+          item: `${SHOP_URL}/shop`,
+        },
+        {
+          "@type": "ListItem",
+          position: 3,
+          name: product.category || "Gadgets",
+          item: `${SHOP_URL}/shop?category=${encodeURIComponent(product.category || "All")}`,
+        },
+        {
+          "@type": "ListItem",
+          position: 4,
+          name: product.name,
+          item: `${SHOP_URL}/shop/${id}`,
+        },
+      ],
+    };
+  }
+
+  return (
+    <>
+      {jsonLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      )}
+      {breadcrumbLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+        />
+      )}
+      <ProductDetailClient />
+    </>
+  );
 }
