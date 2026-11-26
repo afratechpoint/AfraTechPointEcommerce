@@ -2,13 +2,18 @@
 
 import React, { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
 import {
-  User, Mail, ShieldCheck, ShieldAlert, LogOut,
-  Package, ChevronRight, Pencil, Check, X,
-  Phone, MapPin, Info, ShoppingBag, TrendingUp,
-  Calendar, Home, ArrowRight, Truck, CreditCard,
-  Bell, CheckCheck, Trash2, ExternalLink, RefreshCw, Sparkles
+  LogOut,
+  Package,
+  ChevronRight,
+  Pencil,
+  Check,
+  X,
+  ShoppingBag,
+  Bell,
+  CheckCheck,
+  Trash2,
+  RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
@@ -16,11 +21,14 @@ import { updateProfile } from "firebase/auth";
 import { toast } from "sonner";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import AdminSelect from "@/components/admin/AdminSelect";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSettings } from "@/components/SettingsProvider";
 import PremiumLoader from "@/components/PremiumLoader";
+import { useRealtime } from "@/lib/realtime-client";
+import { cn } from "@/lib/utils";
 
-type Tab = "profile" | "orders" | "notifications";
+type Tab = "orders" | "profile" | "notifications";
 
 interface AccountNotification {
   id: string;
@@ -32,7 +40,14 @@ interface AccountNotification {
   createdAt: string;
 }
 
-interface OrderItem { name: string; quantity: number; price: number; image?: string; variantName?: string; }
+interface OrderItem {
+  name: string;
+  quantity: number;
+  price: number;
+  image?: string;
+  variantName?: string;
+  productKind?: string;
+}
 
 interface Order {
   id: string;
@@ -44,50 +59,114 @@ interface Order {
   status?: string;
   orderStatus?: string;
   paymentStatus?: string;
+  cancellationReason?: string;
   paymentMethod?: string;
   payment?: { method?: string };
+  hasPhysical?: boolean;
   items: OrderItem[];
 }
 
-const STATUS_CONFIG: Record<string, { label: string; bg: string; dot: string }> = {
-  Processing: { label: "Processing",  bg: "bg-blue-50 text-blue-600 border-blue-100",   dot: "bg-blue-500"  },
-  Shipped:    { label: "Shipped",     bg: "bg-purple-50 text-purple-600 border-purple-100", dot: "bg-purple-500" },
-  Delivered:  { label: "Delivered",   bg: "bg-green-50 text-green-600 border-green-100",  dot: "bg-green-500"  },
-  Cancelled:  { label: "Cancelled",   bg: "bg-red-50 text-red-500 border-red-100",      dot: "bg-red-500"    },
-  pending:    { label: "Pending",     bg: "bg-amber-50 text-amber-600 border-amber-100",  dot: "bg-amber-500"  },
-  processing: { label: "Processing",  bg: "bg-blue-50 text-blue-600 border-blue-100",   dot: "bg-blue-500"  },
-  shipped:    { label: "Shipped",     bg: "bg-purple-50 text-purple-600 border-purple-100", dot: "bg-purple-500" },
-  delivered:  { label: "Delivered",   bg: "bg-green-50 text-green-600 border-green-100",  dot: "bg-green-500"  },
-  cancelled:  { label: "Cancelled",   bg: "bg-red-50 text-red-500 border-red-100",      dot: "bg-red-500"    },
-};
+function getOrderStatusMeta(rawStatus: string, isVirtual: boolean) {
+  const s = (rawStatus || "pending").toLowerCase();
+  if (s === "delivered" || s === "completed") {
+    return {
+      label: isVirtual ? "Completed" : "Delivered",
+      cls: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    };
+  }
+  if (s === "shipped") {
+    return {
+      label: "Shipped",
+      cls: "bg-gray-100 text-gray-800 border-gray-200",
+    };
+  }
+  if (s === "processing") {
+    return {
+      label: isVirtual ? "In Progress" : "Processing",
+      cls: "bg-gray-100 text-gray-800 border-gray-200",
+    };
+  }
+  if (s === "cancelled") {
+    return {
+      label: "Cancelled",
+      cls: "bg-red-50 text-red-600 border-red-200",
+    };
+  }
+  return {
+    label: "Pending",
+    cls: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+}
 
+function getPaymentStatusMeta(rawPayStatus: string) {
+  const p = (rawPayStatus || "pending").toLowerCase();
+  if (p === "refunded") {
+    return {
+      label: "Refunded",
+      cls: "bg-blue-50 text-blue-700 border-blue-200",
+    };
+  }
+  if (p === "confirmed") {
+    return {
+      label: "Paid",
+      cls: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    };
+  }
+  if (p === "pending_cod") {
+    return {
+      label: "Cash on Delivery",
+      cls: "bg-gray-100 text-gray-700 border-gray-200",
+    };
+  }
+  if (p === "cancelled" || p === "failed") {
+    return {
+      label: p === "failed" ? "Payment Failed" : "Cancelled",
+      cls: "bg-red-50 text-red-600 border-red-200",
+    };
+  }
+  return {
+    label: "Awaiting Verification",
+    cls: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+}
 
 function AccountContent() {
   const { user, loading, logout, displayName: contextName, photoURL: contextPhoto } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const settings = useSettings();
-  const [tab, setTab] = useState<Tab>((searchParams.get("tab") as Tab) || "profile");
+
+  const urlTab = searchParams.get("tab") as Tab | null;
+  const [tab, setTab] = useState<Tab>(
+    urlTab === "profile" || urlTab === "notifications" || urlTab === "orders"
+      ? urlTab
+      : "orders"
+  );
+
+  useEffect(() => {
+    if (urlTab === "profile" || urlTab === "notifications" || urlTab === "orders") {
+      setTab(urlTab);
+    }
+  }, [urlTab]);
 
   const [isEditing, setIsEditing] = useState(false);
-  const [isSaving, setIsSaving]   = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [displayName, setDisplayName] = useState("");
-  const [phone, setPhone]     = useState("");
+  const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [division, setDivision] = useState("");
   const [district, setDistrict] = useState("");
-  const [upazila, setUpazila]   = useState("");
-  const [bio, setBio]         = useState("");
+  const [upazila, setUpazila] = useState("");
+  const [bio, setBio] = useState("");
   const [imgError, setImgError] = useState(false);
 
   const [geoDivisions, setGeoDivisions] = useState<any[]>([]);
   const [geoDistricts, setGeoDistricts] = useState<any[]>([]);
-  const [geoUpazilas, setGeoUpazilas]   = useState<any[]>([]);
+  const [geoUpazilas, setGeoUpazilas] = useState<any[]>([]);
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
 
-  // Customer Notifications State & Handlers
   const [notifications, setNotifications] = useState<AccountNotification[]>([]);
   const [notifsLoading, setNotifsLoading] = useState(false);
   const [notifFilter, setNotifFilter] = useState<"all" | "unread">("all");
@@ -95,41 +174,42 @@ function AccountContent() {
   const [clearingAll, setClearingAll] = useState(false);
   const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
 
-  const fetchNotifications = async () => {
-    if (!user) return;
-    setNotifsLoading(true);
-    try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/notifications?recipient=${user.uid}&limit=50`, {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.notifications && Array.isArray(data.notifications)) {
-          setNotifications(data.notifications);
+  const fetchNotifications = React.useCallback(
+    async (silent = false) => {
+      if (!user) return;
+      if (!silent) setNotifsLoading(true);
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/notifications?recipient=${user.uid}&limit=50`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.notifications && Array.isArray(data.notifications)) {
+            setNotifications(data.notifications);
+          }
         }
+      } catch (err) {
+        console.error("Failed to fetch customer notifications:", err);
+      } finally {
+        if (!silent) setNotifsLoading(false);
       }
-    } catch (err) {
-      console.error("Failed to fetch customer notifications:", err);
-    } finally {
-      setNotifsLoading(false);
-    }
-  };
+    },
+    [user]
+  );
 
   useEffect(() => {
     if (user) {
-      fetchNotifications();
+      fetchNotifications(tab !== "notifications");
     }
-  }, [user, tab]);
+  }, [user, tab, fetchNotifications]);
 
   const unreadNotifsCount = notifications.filter((n) => !n.isRead).length;
 
   const markNotificationRead = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, isRead: true } : n))
-    );
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
     try {
       const token = await user?.getIdToken();
       await fetch("/api/notifications", {
@@ -159,9 +239,8 @@ function AccountContent() {
         },
         body: JSON.stringify({ all: true, recipient: user.uid }),
       });
-    } catch (err) {
-      console.error("Failed to mark all as read:", err);
-      fetchNotifications();
+    } catch {
+      fetchNotifications(true);
     }
   };
 
@@ -177,7 +256,6 @@ function AccountContent() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
-      toast.success("Notification dismissed");
     } catch (err) {
       console.error("Failed to delete notification:", err);
     } finally {
@@ -190,7 +268,7 @@ function AccountContent() {
     setClearingAll(true);
     setNotifications([]);
     setShowClearConfirm(false);
-    toast.success("All notifications cleared");
+    toast.success("Notifications cleared");
     try {
       const token = await user.getIdToken();
       await fetch(`/api/notifications?all=true&recipient=${user.uid}`, {
@@ -199,21 +277,16 @@ function AccountContent() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
-    } catch (err) {
-      console.error("Failed to clear notifications:", err);
-      fetchNotifications();
+    } catch {
+      fetchNotifications(true);
     } finally {
       setClearingAll(false);
     }
   };
 
   const handleNotificationCardClick = (n: AccountNotification) => {
-    if (!n.isRead) {
-      markNotificationRead(n.id);
-    }
-    if (n.link) {
-      router.push(n.link);
-    }
+    if (!n.isRead) markNotificationRead(n.id);
+    if (n.link) router.push(n.link);
   };
 
   const formatNotifTime = (dateInput: string | Date) => {
@@ -226,7 +299,7 @@ function AccountContent() {
       if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
       if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
       if (diff < 86400 * 2) return "Yesterday";
-      return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
     } catch {
       return "";
     }
@@ -235,10 +308,9 @@ function AccountContent() {
   useEffect(() => {
     const fetchProfile = async () => {
       if (!user || isEditing) return;
-      
+
       setDisplayName(user.displayName ?? "");
 
-      // 1. Load from Browser LocalStorage immediately
       const cached = localStorage.getItem(`afra_profile_${user.uid}`);
       if (cached) {
         try {
@@ -250,16 +322,14 @@ function AccountContent() {
           setDistrict(parsed.district ?? "");
           setUpazila(parsed.upazila ?? "");
           setBio(parsed.bio ?? "");
-        } catch (e) {}
+        } catch {}
       }
 
-      // 2. Fetch Securely from Server
       try {
         const idToken = await user.getIdToken();
         const res = await fetch("/api/profile", {
-          headers: { "Authorization": `Bearer ${idToken}` }
+          headers: { Authorization: `Bearer ${idToken}` },
         });
-        
         if (res.ok) {
           const data = await res.json();
           if (data && Object.keys(data).length > 0) {
@@ -273,77 +343,85 @@ function AccountContent() {
             localStorage.setItem(`afra_profile_${user.uid}`, JSON.stringify(data));
           }
         }
-      } catch (err) {
-        console.warn("[Account] Secure fetch failed. Working with local data.");
-      }
+      } catch {}
     };
 
     fetchProfile();
   }, [user, isEditing]);
 
-  // BD Geo Effects
   useEffect(() => {
     if (!isEditing) return;
     fetch("/api/geo/divisions")
-      .then(r => r.json())
-      .then(d => { if (d?.data) setGeoDivisions(d.data); })
-      .catch(console.error);
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.data) setGeoDivisions(d.data);
+      })
+      .catch(() => {});
   }, [isEditing]);
-  
+
   useEffect(() => {
-     if (!isEditing || !division) {
-        setGeoDistricts([]);
-        setGeoUpazilas([]);
-        return;
-     }
-     fetch(`/api/geo/division/${division.toLowerCase()}`)
-      .then(r => r.json())
-      .then(d => { if (d?.data) setGeoDistricts(d.data); })
-      .catch(console.error);
+    if (!isEditing || !division) {
+      setGeoDistricts([]);
+      setGeoUpazilas([]);
+      return;
+    }
+    fetch(`/api/geo/division/${division.toLowerCase()}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.data) setGeoDistricts(d.data);
+      })
+      .catch(() => {});
   }, [isEditing, division]);
 
   useEffect(() => {
-     if (!isEditing || !district || !geoDistricts.length) {
-        setGeoUpazilas([]);
-        return;
-     }
-     const distObj = geoDistricts.find(d => d.district.toLowerCase() === district.toLowerCase());
-     if (distObj?.upazilla) {
-         setGeoUpazilas(distObj.upazilla);
-     } else {
-         setGeoUpazilas([]);
-     }
+    if (!isEditing || !district || !geoDistricts.length) {
+      setGeoUpazilas([]);
+      return;
+    }
+    const distObj = geoDistricts.find(
+      (d) => d.district.toLowerCase() === district.toLowerCase()
+    );
+    setGeoUpazilas(distObj?.upazilla || []);
   }, [isEditing, district, geoDistricts]);
 
+  const fetchUserOrders = React.useCallback(
+    async (silent = false) => {
+      if (!user) return;
+      if (!silent) setOrdersLoading(true);
+      try {
+        const token = await user.getIdToken();
+        const r = await fetch(`/api/orders?userId=${user.uid}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (Array.isArray(data)) {
+          setOrders(
+            data.sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+          );
+        }
+      } catch (err) {
+        console.error("Orders fetch failed:", err);
+      } finally {
+        if (!silent) setOrdersLoading(false);
+      }
+    },
+    [user]
+  );
+
   useEffect(() => {
-    if (tab === "orders" && user) {
-      setOrdersLoading(true);
-      // Get auth token first, then fetch orders with it
-      user.getIdToken()
-        .then(token => fetch(`/api/orders?userId=${user.uid}`, {
-          headers: { "Authorization": `Bearer ${token}` }
-        }))
-        .then(async r => {
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({}));
-            throw new Error(err?.error || `Server error ${r.status}`);
-          }
-          return r.json();
-        })
-        .then((data) => {
-          if (!Array.isArray(data)) {
-            setOrders([]);
-            return;
-          }
-          setOrders(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        })
-        .catch((err) => {
-          console.error("Orders fetch failed:", err);
-          toast.error("Could not load orders. Please try again later.", { description: "This may be a temporary issue." });
-        })
-        .finally(() => setOrdersLoading(false));
+    if (user) {
+      fetchUserOrders(orders.length > 0);
     }
-  }, [tab, user]);
+  }, [tab, user, fetchUserOrders]);
+
+  useRealtime(["orders", "notifications"], () => {
+    fetchUserOrders(true);
+    fetchNotifications(true);
+  });
 
   useEffect(() => {
     if (!loading && !user) router.push("/login");
@@ -352,763 +430,660 @@ function AccountContent() {
   if (loading || !user) return <PremiumLoader />;
 
   const handleSave = async () => {
-    if (!displayName.trim()) { toast.error("Name cannot be empty."); return; }
+    if (!displayName.trim()) {
+      toast.error("Name cannot be empty.");
+      return;
+    }
+    if (phone && !/^\d{11}$/.test(phone)) {
+      toast.error("Phone number must be exactly 11 digits.");
+      return;
+    }
     setIsSaving(true);
-    
-    // Prepare data
     const profileData = { phone, address, division, district, upazila, bio, displayName };
 
     try {
-      // 1. Update Firebase Auth Profile
       await updateProfile(user, { displayName: displayName.trim() });
-
-      // 2. Update Server Securely
       const idToken = await user.getIdToken();
       const res = await fetch("/api/profile", {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken}`
+          Authorization: `Bearer ${idToken}`,
         },
         body: JSON.stringify({ data: profileData }),
       });
 
-      // 3. Status Notification
       if (res.ok) {
-        toast.success("Profile saved successfully!");
+        toast.success("Profile updated");
       } else {
-        // Even if server fails (e.g. quota), we've saved locally above or can do so now
-        toast.info("Profile saved locally (Server limit reached)");
+        toast.info("Profile saved locally");
       }
 
-      // Always update localStorage and state for instant persistence
       localStorage.setItem(`afra_profile_${user.uid}`, JSON.stringify(profileData));
       setIsEditing(false);
-
-    } catch (err) {
-      console.error("Save error:", err);
+    } catch {
       localStorage.setItem(`afra_profile_${user.uid}`, JSON.stringify(profileData));
-      toast.info("Profile updated locally.");
+      toast.info("Profile updated locally");
       setIsEditing(false);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleCancel = async () => {
+  const handleCancel = () => {
     setIsEditing(false);
-    try {
-      const idToken = await user.getIdToken();
-      const res = await fetch("/api/profile", {
-        headers: { "Authorization": `Bearer ${idToken}` }
-      });
-      const data = await res.json();
-      setDisplayName(user.displayName ?? "");
-      if (data) {
+    const cached = localStorage.getItem(`afra_profile_${user.uid}`);
+    setDisplayName(user.displayName ?? "");
+    if (cached) {
+      try {
+        const data = JSON.parse(cached);
+        if (data.displayName) setDisplayName(data.displayName);
         setPhone(data.phone ?? "");
         setAddress(data.address ?? "");
         setDivision(data.division ?? "");
         setDistrict(data.district ?? "");
         setUpazila(data.upazila ?? "");
         setBio(data.bio ?? "");
-      }
-    } catch (err) {
-      console.warn("[Account] Cancel reload failed.");
+      } catch {}
     }
   };
 
-  const currency  = settings?.currencySymbol ?? "৳";
-  const initials  = ((contextName ?? user.email ?? "U")[0]).toUpperCase();
-  const joined    = user.metadata.creationTime
-    ? new Date(user.metadata.creationTime).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
-    : "—";
-
-  // Compute stats from orders (if loaded)
-  const totalSpent = orders.reduce((s, o) => s + (o.totalAmount ?? o.total ?? 0), 0);
-  const deliveredCount = orders.filter(o => (o.status ?? o.orderStatus ?? "").toLowerCase() === "delivered").length;
-
-  const fieldRow = (icon: any, label: string, content: React.ReactNode) => {
-    const Icon = icon;
-    return (
-      <div className="flex items-start gap-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-        <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm border border-gray-100 shrink-0">
-          <Icon size={16} className="text-gray-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1">{label}</p>
-          {content}
-        </div>
-      </div>
-    );
+  const switchTab = (nextTab: Tab) => {
+    setTab(nextTab);
+    router.push(`/account?tab=${nextTab}`, { scroll: false });
   };
 
+  const currency = settings?.currencySymbol ?? "৳";
+  const initials = (contextName ?? user.email ?? "U")[0].toUpperCase();
+  const fullLocation = [address, upazila, district, division].filter(Boolean).join(", ");
+
+  const divisionOptions = [
+    { value: "", label: "Select Division" },
+    ...geoDivisions.map((d) => ({ value: d.division, label: d.division })),
+  ];
+  const districtOptions = [
+    { value: "", label: division ? "Select District" : "Select division first" },
+    ...geoDistricts.map((d) => ({ value: d.district, label: d.district })),
+  ];
+  const upazilaOptions = [
+    { value: "", label: district ? "Select Upazila / Area" : "Select district first" },
+    ...geoUpazilas.map((u: string) => ({ value: u, label: u })),
+  ];
+
+  const filteredNotifs =
+    notifFilter === "unread" ? notifications.filter((n) => !n.isRead) : notifications;
+
   return (
-    <div className="flex flex-col w-full min-h-screen bg-[#f5f6f8]">
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col px-4 md:px-8">
-        <Navbar searchEnabled={false} />
+    <div className="flex flex-col w-full min-h-screen bg-white text-gray-900">
+      <Navbar searchEnabled={false} />
 
-        <main className="py-6 md:py-10">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-            {/* ══ Sidebar ════════════════════════════════════════════ */}
-            <aside className="lg:col-span-3 space-y-4">
-
-              {/* Profile card */}
-              <div className="bg-white rounded-[2rem] border border-gray-100 p-6 flex flex-col items-center text-center shadow-sm">
-                <div className="relative mb-4">
-                  {contextPhoto && !imgError ? (
-                    <div className="w-20 h-20 rounded-full overflow-hidden border-4 border-white shadow-xl ring-2 ring-gray-100">
-                      <Image src={contextPhoto} alt="Profile" width={80} height={80} className="object-cover" unoptimized onError={() => setImgError(true)} />
-                    </div>
-                  ) : (
-                    <div className="w-20 h-20 rounded-full bg-gradient-to-br from-gray-800 to-black flex items-center justify-center shadow-xl">
-                      <span className="text-white text-2xl font-black">{initials}</span>
-                    </div>
-                  )}
-                  {/* Provider badge */}
-                  {user.providerData?.[0]?.providerId === "google.com" && (
-                    <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow border border-gray-100">
-                      <svg viewBox="0 0 24 24" className="w-4 h-4">
-                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                      </svg>
-                    </div>
-                  )}
-                </div>
-                <h2 className="font-black text-gray-900 text-base tracking-tight">{contextName ?? "My Account"}</h2>
-                <p className="text-xs text-gray-400 font-medium truncate max-w-full mt-1">{user.email}</p>
-                {user.emailVerified ? (
-                  <div className="flex items-center gap-1.5 mt-2 bg-green-50 text-green-600 text-[10px] font-bold px-3 py-1 rounded-full border border-green-100">
-                    <ShieldCheck size={11} /> Verified Account
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5 mt-2 bg-orange-50 text-orange-500 text-[10px] font-bold px-3 py-1 rounded-full border border-orange-100">
-                    <ShieldAlert size={11} /> Email not verified
-                  </div>
-                )}
-                <div className="w-full mt-4 pt-4 border-t border-gray-50 flex items-center gap-2 text-[10px] text-gray-400 justify-center" suppressHydrationWarning>
-                  <Calendar size={10} /> Member since {joined}
-                </div>
+      <main className="flex-1 w-full max-w-[1800px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12 py-6 md:py-10">
+        {/* ── Compact Account Header ── */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-gray-200">
+          <div className="flex items-center gap-3.5 min-w-0">
+            {contextPhoto && !imgError ? (
+              <div className="w-12 h-12 rounded-full overflow-hidden border border-gray-200 shrink-0 bg-gray-50">
+                <Image
+                  src={contextPhoto}
+                  alt={contextName ?? "Account"}
+                  width={48}
+                  height={48}
+                  className="w-full h-full object-cover"
+                  unoptimized
+                  onError={() => setImgError(true)}
+                />
               </div>
-
-              {/* Navigation */}
-              <nav className="bg-white rounded-[2rem] border border-gray-100 overflow-hidden shadow-sm">
-                {([
-                  { id: "profile", label: "My Profile", icon: User, desc: "Personal info & settings" },
-                  { id: "orders", label: "Order History", icon: Package, desc: "Track your purchases" },
-                  { id: "notifications", label: "Notifications", icon: Bell, desc: "Alerts & order updates", count: unreadNotifsCount },
-                ] as { id: Tab; label: string; icon: any; desc: string; count?: number }[]).map(({ id, label, icon: Icon, desc, count }) => (
-                  <button
-                    key={id}
-                    onClick={() => {
-                      setTab(id);
-                      router.push(`/account?tab=${id}`, { scroll: false });
-                    }}
-                    className={`w-full flex items-center justify-between px-5 py-4 text-left border-b border-gray-50 last:border-0 transition-all ${
-                      tab === id ? "bg-gray-50 text-black font-black" : "text-gray-500 hover:bg-gray-50/50 hover:text-black"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${tab === id ? "bg-black text-white" : "bg-gray-100 text-gray-500"}`}>
-                        <Icon size={15} />
-                      </div>
-                      <div className="text-left">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-bold">{label}</p>
-                          {count && count > 0 ? (
-                            <span className="px-1.5 py-0.5 text-[9px] font-black rounded-full bg-red-500 text-white">
-                              {count > 9 ? "9+" : count}
-                            </span>
-                          ) : null}
-                        </div>
-                        <p className="text-[9px] text-gray-400 font-medium">{desc}</p>
-                      </div>
-                    </div>
-                    <ChevronRight size={14} className={tab === id ? "text-black" : "text-gray-300"} />
-                  </button>
-                ))}
-              </nav>
-
-              {/* Quick Stats (only when orders loaded) */}
-              {orders.length > 0 && (
-                <div className="bg-white rounded-[2rem] border border-gray-100 p-5 shadow-sm space-y-3">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Your Stats</p>
-                  <div className="space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500 flex items-center gap-2"><ShoppingBag size={12} /> Total Orders</span>
-                      <span className="text-sm font-black text-gray-900">{orders.length}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500 flex items-center gap-2"><Check size={12} className="text-green-500" /> Delivered</span>
-                      <span className="text-sm font-black text-green-600">{deliveredCount}</span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-gray-50 pt-2.5">
-                      <span className="text-xs text-gray-500 flex items-center gap-2"><TrendingUp size={12} /> Total Spent</span>
-                      <span className="text-sm font-black text-gray-900">{currency}{totalSpent.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Sign Out */}
-              <button
-                onClick={async () => { await logout(); router.push("/"); }}
-                className="w-full flex items-center justify-center gap-2 h-12 bg-white border border-gray-100 rounded-2xl text-sm font-bold text-gray-400 hover:text-red-500 hover:border-red-100 hover:bg-red-50 transition-all shadow-sm"
-              >
-                <LogOut size={16} /> Sign Out
-              </button>
-            </aside>
-
-            {/* ══ Main Content ════════════════════════════════════════ */}
-            <div className="lg:col-span-9">
-              <AnimatePresence mode="wait">
-
-                {/* ── Profile Tab ── */}
-                {tab === "profile" && (
-                  <motion.div key="profile" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-5">
-
-                    {/* Profile Info Card */}
-                    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6 md:p-8">
-
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-lg font-black text-gray-900">Profile Information</h3>
-                          <p className="text-xs text-gray-400 mt-0.5">Manage your personal details</p>
-                        </div>
-                        {!isEditing ? (
-                          <button onClick={() => setIsEditing(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-50 hover:bg-black hover:text-white text-gray-600 text-xs font-bold border border-gray-100 hover:border-black transition-all">
-                            <Pencil size={13} /> Edit Profile
-                          </button>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            <button onClick={handleCancel} disabled={isSaving} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gray-50 text-gray-500 text-xs font-bold border border-gray-100 hover:bg-gray-100 transition-all">
-                              <X size={13} /> Cancel
-                            </button>
-                            <button onClick={handleSave} disabled={isSaving} className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-black text-white text-xs font-bold hover:bg-gray-800 transition-all disabled:opacity-60">
-                              {isSaving ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check size={13} />}
-                              Save Changes
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {fieldRow(User, "Full Name",
-                          isEditing
-                            ? <input value={displayName} onChange={e => setDisplayName(e.target.value)} className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-black" />
-                            : <p className="text-sm font-bold text-gray-900 truncate">{contextName ?? "—"}</p>
-                        )}
-                        {fieldRow(Mail, "Email Address",
-                          <p className="text-sm font-bold text-gray-900 truncate">{user.email ?? "—"}</p>
-                        )}
-                        {fieldRow(Phone, "Phone Number",
-                          isEditing
-                            ? <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+880 17XX XXX XXX" className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-black" />
-                            : <p className="text-sm font-bold text-gray-900">{phone || <span className="text-gray-400 font-medium">Not set</span>}</p>
-                        )}
-                        {fieldRow(Calendar, "Member Since",
-                          <p className="text-sm font-bold text-gray-900">{joined}</p>
-                        )}
-                      </div>
-
-                      <div className="mt-3 space-y-3">
-                        {fieldRow(MapPin, "Delivery Address",
-                          isEditing
-                            ? <div className="space-y-3">
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                  {/* Division Dropdown */}
-                                  <div className="relative">
-                                    <select value={division} onChange={e => { setDivision(e.target.value); setDistrict(""); setUpazila(""); }} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium text-gray-900 outline-none focus:ring-2 focus:ring-black appearance-none cursor-pointer">
-                                      <option value="">Select Division</option>
-                                      {geoDivisions.map(d => <option key={d._id || d.division} value={d.division}>{d.division}</option>)}
-                                    </select>
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">▼</div>
-                                  </div>
-                                  
-                                  {/* District Dropdown */}
-                                  <div className="relative">
-                                    <select value={district} onChange={e => { setDistrict(e.target.value); setUpazila(""); }} disabled={!division} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium text-gray-900 outline-none focus:ring-2 focus:ring-black appearance-none disabled:opacity-50 cursor-pointer">
-                                      <option value="">Select District</option>
-                                      {geoDistricts.map(d => <option key={d._id || d.district} value={d.district}>{d.district}</option>)}
-                                    </select>
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">▼</div>
-                                  </div>
-
-                                  {/* Upazila Dropdown */}
-                                  <div className="relative">
-                                    <select value={upazila} onChange={e => setUpazila(e.target.value)} disabled={!district} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium text-gray-900 outline-none focus:ring-2 focus:ring-black appearance-none disabled:opacity-50 cursor-pointer">
-                                      <option value="">Select Upazila / Area</option>
-                                      {geoUpazilas.map(u => <option key={u} value={u}>{u}</option>)}
-                                    </select>
-                                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">▼</div>
-                                  </div>
-                                </div>
-                                <div className="relative">
-                                  <textarea 
-                                    value={address} 
-                                    onChange={e => setAddress(e.target.value.slice(0, 15))} 
-                                    placeholder="গ্রাম, বাসার নম্বর" 
-                                    maxLength={15} 
-                                    rows={1} 
-                                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-black resize-none pr-12" 
-                                  />
-                                  <div className="absolute right-3 bottom-2 text-[10px] font-bold text-gray-400">
-                                    {address.length}/15
-                                  </div>
-                                </div>
-                              </div>
-                            : <p className="text-sm border-l-2 border-gray-200 pl-3 leading-relaxed">
-                                {address || division || district || upazila ? (
-                                   <>
-                                      {address && <span className="font-bold text-gray-900 block">{address}</span>}
-                                      <span className="text-gray-500 font-medium text-xs mt-0.5 block">
-                                        {[upazila, district, division].filter(Boolean).join(", ")}
-                                      </span>
-                                   </>
-                                ) : <span className="text-gray-400 font-medium">No address set</span>}
-                              </p>
-                        )}
-                        {fieldRow(Info, "About Me",
-                          isEditing
-                            ? <textarea value={bio} onChange={e => setBio(e.target.value)} placeholder="Tell us about yourself…" rows={2} className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-sm font-bold text-gray-900 outline-none focus:ring-2 focus:ring-black resize-none" />
-                            : <p className="text-sm font-bold text-gray-900 leading-relaxed">{bio || <span className="text-gray-400 font-medium">Not set</span>}</p>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Account Security Card */}
-                    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6">
-                      <h3 className="text-sm font-black text-gray-900 mb-4">Account Security</h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${user.emailVerified ? "bg-green-50" : "bg-orange-50"}`}>
-                            <ShieldCheck size={16} className={user.emailVerified ? "text-green-600" : "text-orange-500"} />
-                          </div>
-                          <div>
-                            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Email Verification</p>
-                            <p className={`text-xs font-black mt-0.5 ${user.emailVerified ? "text-green-600" : "text-orange-500"}`}>
-                              {user.emailVerified ? "Verified" : "Not Verified"}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                          <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
-                            <User size={16} className="text-blue-600" />
-                          </div>
-                          <div>
-                            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Sign-in Method</p>
-                            <p className="text-xs font-black mt-0.5 text-gray-900">
-                              {user.providerData?.[0]?.providerId === "google.com" ? "Google Account" : "Email & Password"}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Quick Links */}
-                    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6">
-                      <h3 className="text-sm font-black text-gray-900 mb-4">Quick Links</h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {[
-                          { href: "/shop",           label: "Browse Products",  icon: ShoppingBag, color: "bg-blue-50 text-blue-600" },
-                          { href: "/account?tab=orders", label: "My Orders",   icon: Package,     color: "bg-purple-50 text-purple-600" },
-                          { href: "/contact",        label: "Contact Support",  icon: Home,        color: "bg-green-50 text-green-600" },
-                        ].map(({ href, label, icon: Icon, color }) => (
-                          <Link key={href} href={href} className="flex items-center justify-between p-3.5 bg-gray-50 hover:bg-gray-100 rounded-2xl border border-gray-100 transition-all group">
-                            <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${color}`}><Icon size={14} /></div>
-                              <span className="text-xs font-bold text-gray-700">{label}</span>
-                            </div>
-                            <ArrowRight size={13} className="text-gray-300 group-hover:text-black transition-colors" />
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* ── Orders Tab ── */}
-                {tab === "orders" && (
-                  <motion.div key="orders" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-
-                    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6 md:p-8">
-                      <div className="flex items-center justify-between mb-6">
-                        <div>
-                          <h3 className="text-lg font-black text-gray-900">Order History</h3>
-                          <p className="text-xs text-gray-400 mt-0.5">{orders.length} order{orders.length !== 1 ? "s" : ""} found</p>
-                        </div>
-                        <Link href="/shop" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-black text-white text-xs font-bold hover:bg-gray-800 transition-all">
-                          <ShoppingBag size={13} /> Shop More
-                        </Link>
-                      </div>
-
-                      {ordersLoading ? (
-                        <div className="flex items-center justify-center py-16">
-                          <div className="w-8 h-8 border-4 border-gray-100 border-t-black rounded-full animate-spin" />
-                        </div>
-                      ) : orders.length === 0 ? (
-                        <div className="text-center py-16">
-                          <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Package size={36} className="text-gray-200" />
-                          </div>
-                          <p className="text-gray-600 font-bold text-lg">No orders yet</p>
-                          <p className="text-gray-400 text-sm mt-1 mb-6">Your orders will appear here after checkout.</p>
-                          <Link href="/shop" className="inline-flex items-center gap-2 h-11 px-6 bg-black text-white text-sm font-black rounded-xl hover:bg-gray-800 transition-colors">
-                            <ShoppingBag size={16} /> Start Shopping
-                          </Link>
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {orders.map((order) => {
-                            const ordStatus = order.status ?? order.orderStatus ?? "pending";
-                            const payStatus = order.paymentStatus ?? "pending";
-                            const statusCfg = STATUS_CONFIG[ordStatus] ?? STATUS_CONFIG.pending;
-                            const total = order.totalAmount ?? order.total ?? 0;
-                            const subtotal = order.subtotal ?? total;
-                            const delivery = order.deliveryCharge ?? 0;
-                            const pmtMethod = order.payment?.method ?? order.paymentMethod ?? "—";
-                            const shortId = order.id.slice(0, 8).toUpperCase();
-                            const itemCount = order.items?.reduce((s, i) => s + (i.quantity ?? 1), 0) ?? 0;
-                            const isCOD = pmtMethod === "Cash on Delivery";
-
-                            const payBadge: Record<string, string> = {
-                              pending:     "bg-amber-50 text-amber-600 border-amber-200",
-                              pending_cod: "bg-blue-50 text-blue-700 border-blue-200",
-                              confirmed:   "bg-green-50 text-green-600 border-green-200",
-                              cancelled:   "bg-red-50 text-red-500 border-red-200",
-                            };
-
-                            return (
-                              <Link key={order.id} href={`/account/orders/${order.id}`}
-                                className="block p-5 bg-gray-50 rounded-2xl border border-gray-100 hover:border-gray-300 hover:bg-white hover:shadow-sm transition-all group"
-                              >
-                                {/* Top row */}
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center shrink-0">
-                                      <Package size={16} className="text-white" />
-                                    </div>
-                                    <div>
-                                      <p className="text-sm font-black text-gray-900">#{shortId}</p>
-                                      <p className="text-[10px] text-gray-400 font-medium mt-0.5">
-                                        {new Date(order.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                                        {" · "}{itemCount} item{itemCount !== 1 ? "s" : ""}
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-base font-black text-gray-900">{currency}{total.toFixed(2)}</span>
-                                    <ChevronRight size={14} className="text-gray-300 group-hover:text-black transition-colors" />
-                                  </div>
-                                </div>
-
-                                {/* Charge breakdown (if delivery applies) */}
-                                {delivery > 0 && (
-                                  <div className="mt-3 flex items-center gap-4 text-[10px] text-gray-400 font-medium">
-                                    <span>Subtotal: {currency}{subtotal.toFixed(2)}</span>
-                                    <span className="text-gray-300">+</span>
-                                    <span className="flex items-center gap-1"><Truck size={10} /> Delivery: {currency}{delivery.toFixed(2)}</span>
-                                  </div>
-                                )}
-
-                                {/* Status badges */}
-                                <div className="mt-3 flex items-center gap-2 flex-wrap">
-                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-bold border ${statusCfg.bg}`}>
-                                    <span className={`w-1.5 h-1.5 rounded-full ${statusCfg.dot}`} />
-                                    {statusCfg.label}
-                                  </span>
-                                  <span className={`px-2.5 py-1 rounded-full text-[9px] font-bold border ${payBadge[payStatus] ?? "bg-gray-50 text-gray-500 border-gray-100"}`}>
-                                    {payStatus === "pending_cod" ? "💵 Cash on Delivery" : payStatus === "confirmed" ? "✓ Payment Confirmed" : payStatus === "pending" ? "⏳ Awaiting Payment" : "Cancelled"}
-                                  </span>
-                                  <span className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-bold bg-gray-100 text-gray-600 border border-gray-100">
-                                    <CreditCard size={9} /> {pmtMethod}
-                                  </span>
-                                </div>
-
-                                {/* COD Notice */}
-                                {isCOD && (
-                                  <div className="mt-3 flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2">
-                                    <Truck size={12} className="text-blue-600 shrink-0" />
-                                    <p className="text-blue-700 text-[10px] font-medium">Pay {currency}{total.toFixed(2)} when your order arrives at your door.</p>
-                                  </div>
-                                )}
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* ── Notifications Tab ── */}
-                {tab === "notifications" && (
-                  <motion.div
-                    key="notifications"
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="space-y-5"
-                  >
-                    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm p-6 md:p-8">
-                      {/* Header */}
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-gray-100">
-                        <div>
-                          <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
-                            <Bell size={20} className="text-gray-900" /> Notifications
-                          </h3>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {unreadNotifsCount > 0
-                              ? `${unreadNotifsCount} unread alert${unreadNotifsCount !== 1 ? "s" : ""}`
-                              : "All caught up!"}
-                            {notifications.length > 0 && ` · ${notifications.length} total`}
-                          </p>
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <button
-                            onClick={fetchNotifications}
-                            disabled={notifsLoading}
-                            className="p-2.5 rounded-xl border border-gray-200 bg-white text-gray-600 hover:text-black hover:border-black active:scale-95 transition-all disabled:opacity-40"
-                            title="Refresh notifications"
-                          >
-                            <RefreshCw size={14} className={notifsLoading ? "animate-spin" : ""} />
-                          </button>
-
-                          {unreadNotifsCount > 0 && (
-                            <button
-                              onClick={markAllNotificationsRead}
-                              className="flex items-center gap-1.5 text-xs font-bold bg-black text-white px-4 py-2.5 rounded-xl hover:bg-gray-800 active:scale-95 transition-all shadow-sm"
-                            >
-                              <CheckCheck size={14} /> Mark all read
-                            </button>
-                          )}
-
-                          {notifications.length > 0 && (
-                            <button
-                              onClick={() => setShowClearConfirm(true)}
-                              className="flex items-center gap-1.5 text-xs font-bold bg-red-50 text-red-500 border border-red-100 px-4 py-2.5 rounded-xl hover:bg-red-100 active:scale-95 transition-all"
-                            >
-                              <Trash2 size={13} /> Clear all
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Filter Tabs */}
-                      <div className="flex gap-2 pt-5 pb-2">
-                        {(["all", "unread"] as const).map((f) => (
-                          <button
-                            key={f}
-                            onClick={() => setNotifFilter(f)}
-                            className={`px-4 py-1.5 rounded-full text-xs font-bold capitalize transition-all ${
-                              notifFilter === f
-                                ? "bg-black text-white"
-                                : "bg-gray-50 border border-gray-200 text-gray-500 hover:text-black hover:border-black"
-                            }`}
-                          >
-                            {f} {f === "unread" && unreadNotifsCount > 0 && `(${unreadNotifsCount})`}
-                            {f === "all" && notifications.length > 0 && `(${notifications.length})`}
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Clear All Modal Confirmation */}
-                      <AnimatePresence>
-                        {showClearConfirm && (
-                          <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[150] flex items-center justify-center p-4"
-                            onClick={() => setShowClearConfirm(false)}
-                          >
-                            <motion.div
-                              initial={{ scale: 0.95, y: 10 }}
-                              animate={{ scale: 1, y: 0 }}
-                              exit={{ scale: 0.95, y: 10 }}
-                              onClick={(e) => e.stopPropagation()}
-                              className="bg-white rounded-3xl p-6 md:p-8 max-w-sm w-full shadow-2xl text-center"
-                            >
-                              <div className="w-14 h-14 bg-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                                <Trash2 size={24} className="text-red-500" />
-                              </div>
-                              <h4 className="text-lg font-black text-gray-900 mb-1">Clear all alerts?</h4>
-                              <p className="text-xs text-gray-400 mb-6 leading-relaxed">
-                                This will permanently delete all {notifications.length} notifications from your account.
-                              </p>
-                              <div className="flex gap-3">
-                                <button
-                                  onClick={() => setShowClearConfirm(false)}
-                                  className="flex-1 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50 transition-all"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  onClick={clearAllNotifications}
-                                  disabled={clearingAll}
-                                  className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-xs font-bold hover:bg-red-600 transition-all disabled:opacity-40"
-                                >
-                                  {clearingAll ? "Clearing..." : "Yes, clear all"}
-                                </button>
-                              </div>
-                            </motion.div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-
-                      {/* Notifications List */}
-                      <div className="mt-4">
-                        {notifsLoading && notifications.length === 0 ? (
-                          <div className="py-20 flex items-center justify-center">
-                            <div className="w-7 h-7 border-4 border-gray-100 border-t-black rounded-full animate-spin" />
-                          </div>
-                        ) : (
-                          (() => {
-                            const filteredNotifs =
-                              notifFilter === "unread"
-                                ? notifications.filter((n) => !n.isRead)
-                                : notifications;
-
-                            if (filteredNotifs.length === 0) {
-                              return (
-                                <div className="py-16 text-center flex flex-col items-center">
-                                  <div className="w-14 h-14 bg-gray-50 rounded-2xl flex items-center justify-center mb-3">
-                                    <Bell size={24} className="text-gray-300" />
-                                  </div>
-                                  <p className="text-sm font-bold text-gray-800">
-                                    {notifFilter === "unread" ? "No unread alerts" : "No notifications yet"}
-                                  </p>
-                                  <p className="text-xs text-gray-400 mt-1 max-w-xs leading-relaxed">
-                                    {notifFilter === "unread"
-                                      ? "You've read all your notifications."
-                                      : "We'll notify you whenever your order status changes or exciting deals arrive!"}
-                                  </p>
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <div className="space-y-3">
-                                {filteredNotifs.map((n) => {
-                                  const getNotifIcon = (type: string) => {
-                                    switch (type) {
-                                      case "order_status_update":
-                                        return (
-                                          <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
-                                            <Package size={18} />
-                                          </div>
-                                        );
-                                      case "payment_received":
-                                        return (
-                                          <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                                            <ShoppingBag size={18} />
-                                          </div>
-                                        );
-                                      case "welcome":
-                                        return (
-                                          <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                                            <Sparkles size={18} />
-                                          </div>
-                                        );
-                                      default:
-                                        return (
-                                          <div className="w-10 h-10 rounded-2xl bg-gray-100 text-gray-600 flex items-center justify-center shrink-0">
-                                            <Info size={18} />
-                                          </div>
-                                        );
-                                    }
-                                  };
-
-                                  return (
-                                    <div
-                                      key={n.id}
-                                      onClick={() => handleNotificationCardClick(n)}
-                                      className={`p-4 md:p-5 rounded-2xl border transition-all cursor-pointer group flex items-start gap-4 ${
-                                        !n.isRead
-                                          ? "bg-blue-50/40 border-blue-100 hover:border-blue-200"
-                                          : "bg-gray-50/50 border-gray-100 hover:bg-white hover:border-gray-200 hover:shadow-sm"
-                                      }`}
-                                    >
-                                      {/* Icon */}
-                                      {getNotifIcon(n.type)}
-
-                                      {/* Content */}
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-start justify-between gap-2">
-                                          <p className={`text-sm text-gray-900 ${!n.isRead ? "font-black" : "font-bold"}`}>
-                                            {n.title}
-                                            {!n.isRead && (
-                                              <span className="ml-2 inline-block w-2 h-2 bg-blue-500 rounded-full align-middle" />
-                                            )}
-                                          </p>
-                                          <span className="text-[10px] text-gray-400 font-medium shrink-0">
-                                            {formatNotifTime(n.createdAt)}
-                                          </span>
-                                        </div>
-                                        <p className="text-xs text-gray-600 mt-1 leading-relaxed">
-                                          {n.message}
-                                        </p>
-
-                                        {/* Actions */}
-                                        <div className="flex items-center justify-between mt-3 pt-2 border-t border-gray-100/60">
-                                          {n.link ? (
-                                            <Link
-                                              href={n.link}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (!n.isRead) markNotificationRead(n.id);
-                                              }}
-                                              className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 transition-colors"
-                                            >
-                                              <ExternalLink size={12} /> View details
-                                            </Link>
-                                          ) : <span />}
-
-                                          <div className="flex items-center gap-1.5">
-                                            {!n.isRead && (
-                                              <button
-                                                onClick={(e) => markNotificationRead(n.id, e)}
-                                                title="Mark read"
-                                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
-                                              >
-                                                <Check size={11} /> Mark read
-                                              </button>
-                                            )}
-                                            <button
-                                              onClick={(e) => deleteNotification(n.id, e)}
-                                              disabled={deletingNotifId === n.id}
-                                              title="Delete notification"
-                                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                                            >
-                                              {deletingNotifId === n.id ? (
-                                                <div className="w-3.5 h-3.5 border-2 border-red-300 border-t-red-500 rounded-full animate-spin" />
-                                              ) : (
-                                                <Trash2 size={13} />
-                                              )}
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })()
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-black text-white flex items-center justify-center shrink-0 text-base font-bold">
+                {initials}
+              </div>
+            )}
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold text-gray-900 truncate">
+                {contextName || displayName || "My Account"}
+              </h1>
+              <p className="text-xs sm:text-sm text-gray-500 truncate">{user.email}</p>
             </div>
           </div>
-        </main>
-      </div>
+
+          <div className="flex items-center gap-2.5 self-start sm:self-auto">
+            <Link
+              href="/shop"
+              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-700 hover:border-black hover:text-black transition-colors"
+            >
+              <ShoppingBag size={14} /> Shop
+            </Link>
+            <button
+              onClick={async () => {
+                await logout();
+                router.push("/");
+              }}
+              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors cursor-pointer"
+            >
+              <LogOut size={14} /> Sign Out
+            </button>
+          </div>
+        </div>
+
+        {/* ── Clean Navigation Tabs ── */}
+        <div className="flex items-center gap-1 border-b border-gray-200 mt-2 mb-6 overflow-x-auto no-scrollbar">
+          {(
+            [
+              { id: "orders", label: "Orders", badge: orders.length > 0 ? orders.length : undefined },
+              { id: "profile", label: "Profile" },
+              {
+                id: "notifications",
+                label: "Notifications",
+                badge: unreadNotifsCount > 0 ? unreadNotifsCount : undefined,
+                alert: unreadNotifsCount > 0,
+              },
+            ] as { id: Tab; label: string; badge?: number; alert?: boolean }[]
+          ).map((item) => {
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => switchTab(item.id)}
+                className={cn(
+                  "relative px-4 py-3 text-sm font-semibold transition-colors whitespace-nowrap flex items-center gap-2 cursor-pointer",
+                  active ? "text-black" : "text-gray-500 hover:text-gray-900"
+                )}
+              >
+                <span>{item.label}</span>
+                {item.badge !== undefined && (
+                  <span
+                    className={cn(
+                      "px-1.5 py-0.5 text-[11px] font-bold rounded-full leading-none",
+                      item.alert
+                        ? "bg-black text-white"
+                        : active
+                        ? "bg-gray-900 text-white"
+                        : "bg-gray-100 text-gray-600"
+                    )}
+                  >
+                    {item.badge > 99 ? "99+" : item.badge}
+                  </span>
+                )}
+                {active && (
+                  <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-black rounded-full" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ══ TAB 1: ORDERS ══════════════════════════════════════════════════ */}
+        {tab === "orders" && (
+          <div>
+            {ordersLoading && orders.length === 0 ? (
+              <div className="py-20 flex items-center justify-center">
+                <div className="w-6 h-6 border-2 border-gray-200 border-t-black rounded-full animate-spin" />
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="border border-gray-200 rounded-2xl py-16 px-4 text-center">
+                <Package size={28} className="text-gray-300 mx-auto mb-3" />
+                <p className="text-sm font-semibold text-gray-900">No orders yet</p>
+                <p className="text-xs text-gray-500 mt-1 mb-5">
+                  When you place an order, it will appear here.
+                </p>
+                <Link
+                  href="/shop"
+                  className="inline-flex items-center gap-2 h-10 px-5 rounded-xl bg-black text-white text-xs font-semibold hover:bg-gray-800 transition-colors"
+                >
+                  Browse Products
+                </Link>
+              </div>
+            ) : (
+              <div className="border border-gray-200 rounded-2xl divide-y divide-gray-100 overflow-hidden bg-white">
+                {orders.map((order) => {
+                  const firstItem = order.items?.[0];
+                  const extraItems = Math.max(0, (order.items?.length ?? 0) - 1);
+                  const isVirtual =
+                    order.hasPhysical === false ||
+                    (Array.isArray(order.items) &&
+                      order.items.length > 0 &&
+                      order.items.every((it) => it.productKind === "virtual"));
+
+                  const ordMeta = getOrderStatusMeta(
+                    order.orderStatus ?? order.status ?? "pending",
+                    isVirtual
+                  );
+                  const payMeta = getPaymentStatusMeta(order.paymentStatus ?? "pending");
+                  const total = order.totalAmount ?? order.total ?? 0;
+                  const pmtMethod = order.payment?.method ?? order.paymentMethod ?? "—";
+                  const shortId = order.id.slice(0, 8).toUpperCase();
+                  const dateStr = new Date(order.createdAt).toLocaleDateString("en-GB", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  });
+
+                  return (
+                    <Link
+                      key={order.id}
+                      href={`/account/orders/${order.id}`}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:px-6 sm:py-5 hover:bg-gray-50/70 transition-colors group"
+                    >
+                      {/* Left: Product Thumbnail + Order Summary */}
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className="w-14 h-14 rounded-xl bg-gray-50 border border-gray-100 overflow-hidden shrink-0 flex items-center justify-center">
+                          {firstItem?.image ? (
+                            <img
+                              src={firstItem.image}
+                              alt={firstItem.name}
+                              className="w-full h-full object-contain p-1.5"
+                            />
+                          ) : (
+                            <Package size={20} className="text-gray-300" />
+                          )}
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-semibold text-gray-900 truncate max-w-[260px] sm:max-w-[420px]">
+                              {firstItem?.name || `Order #${shortId}`}
+                            </p>
+                            {extraItems > 0 && (
+                              <span className="text-xs font-medium text-gray-500">
+                                +{extraItems} more
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-gray-500 mt-0.5 truncate">
+                            {firstItem?.variantName ? `${firstItem.variantName} · ` : ""}
+                            <span className="font-mono text-gray-400">#{shortId}</span>
+                            {" · "}
+                            {dateStr}
+                            {pmtMethod && pmtMethod !== "—" ? ` · ${pmtMethod}` : ""}
+                          </p>
+                          {ordMeta.label === "Cancelled" && order.cancellationReason && (
+                            <p className="text-xs text-red-600 mt-1 truncate max-w-[300px] sm:max-w-[520px]">
+                              Reason: {order.cancellationReason}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: Status Pills + Price + Arrow */}
+                      <div className="flex items-center justify-between sm:justify-end gap-4 sm:gap-6 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 shrink-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={cn(
+                              "px-2.5 py-1 rounded-lg text-[11px] font-semibold border",
+                              payMeta.cls
+                            )}
+                          >
+                            {payMeta.label}
+                          </span>
+                          <span
+                            className={cn(
+                              "px-2.5 py-1 rounded-lg text-[11px] font-semibold border",
+                              ordMeta.cls
+                            )}
+                          >
+                            {ordMeta.label}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm sm:text-base font-bold text-gray-900 tabular-nums">
+                            {currency}
+                            {total.toFixed(2)}
+                          </span>
+                          <ChevronRight
+                            size={16}
+                            className="text-gray-400 group-hover:text-black group-hover:translate-x-0.5 transition-all"
+                          />
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ TAB 2: PROFILE ═════════════════════════════════════════════════ */}
+        {tab === "profile" && (
+          <div className="border border-gray-200 rounded-2xl p-5 sm:p-7 bg-white">
+            <div className="flex items-center justify-between gap-4 pb-5 mb-6 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-bold text-gray-900">Personal & Delivery Info</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Used to pre-fill your details during checkout.
+                </p>
+              </div>
+
+              {!isEditing ? (
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-700 hover:border-black hover:text-black transition-colors cursor-pointer"
+                >
+                  <Pencil size={13} /> Edit
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCancel}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-xl border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+                  >
+                    <X size={13} /> Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1.5 h-9 px-4 rounded-xl bg-black text-white text-xs font-semibold hover:bg-gray-800 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Check size={13} /> {isSaving ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!isEditing ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-6 gap-x-8">
+                <div>
+                  <p className="text-xs font-medium text-gray-400 mb-1">Full Name</p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {displayName || contextName || "—"}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium text-gray-400 mb-1">Email Address</p>
+                  <p className="text-sm font-semibold text-gray-900">{user.email || "—"}</p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium text-gray-400 mb-1">Phone Number</p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {phone || <span className="text-gray-400 font-normal">Not provided</span>}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium text-gray-400 mb-1">Delivery Address</p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {fullLocation || <span className="text-gray-400 font-normal">Not provided</span>}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Full Name
+                    </label>
+                    <input
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      className="w-full h-10 px-3.5 rounded-xl bg-white border border-gray-200 text-sm text-gray-900 outline-none focus:border-black transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-gray-700">
+                        Phone Number
+                      </label>
+                      <span className="text-[11px] text-gray-400">{phone.length}/11</span>
+                    </div>
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      minLength={11}
+                      maxLength={11}
+                      pattern="[0-9]{11}"
+                      value={phone}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, "");
+                        const clean =
+                          digits.startsWith("8801") && digits.length >= 13
+                            ? digits.slice(2, 13)
+                            : digits.slice(0, 11);
+                        setPhone(clean);
+                      }}
+                      placeholder="01XXXXXXXXX"
+                      className="w-full h-10 px-3.5 rounded-xl bg-white border border-gray-200 text-sm font-mono text-gray-900 outline-none focus:border-black transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Division
+                    </label>
+                    <AdminSelect
+                      value={division}
+                      onChange={(val) => {
+                        setDivision(val);
+                        setDistrict("");
+                        setUpazila("");
+                      }}
+                      options={divisionOptions}
+                      placeholder="Select Division"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      District
+                    </label>
+                    <AdminSelect
+                      value={district}
+                      onChange={(val) => {
+                        setDistrict(val);
+                        setUpazila("");
+                      }}
+                      options={districtOptions}
+                      placeholder="Select District"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Upazila / Area
+                    </label>
+                    <AdminSelect
+                      value={upazila}
+                      onChange={(val) => setUpazila(val)}
+                      options={upazilaOptions}
+                      placeholder="Select Area"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                    Street / House Address
+                  </label>
+                  <input
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value.slice(0, 150))}
+                    placeholder="House, road, block, or village"
+                    maxLength={150}
+                    className="w-full h-10 px-3.5 rounded-xl bg-white border border-gray-200 text-sm text-gray-900 outline-none focus:border-black transition-colors"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ TAB 3: NOTIFICATIONS ═══════════════════════════════════════════ */}
+        {tab === "notifications" && (
+          <div>
+            {/* Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-1.5">
+                {(["all", "unread"] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setNotifFilter(f)}
+                    className={cn(
+                      "h-8 px-3.5 rounded-lg text-xs font-semibold capitalize transition-colors cursor-pointer",
+                      notifFilter === f
+                        ? "bg-black text-white"
+                        : "bg-gray-100 text-gray-600 hover:text-black"
+                    )}
+                  >
+                    {f}
+                    {f === "unread" && unreadNotifsCount > 0 ? ` (${unreadNotifsCount})` : ""}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fetchNotifications(false)}
+                  disabled={notifsLoading}
+                  title="Refresh"
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:border-black hover:text-black transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  <RefreshCw size={13} className={notifsLoading ? "animate-spin" : ""} />
+                </button>
+
+                {unreadNotifsCount > 0 && (
+                  <button
+                    onClick={markAllNotificationsRead}
+                    className="h-8 px-3 rounded-lg border border-gray-200 text-xs font-semibold text-gray-700 hover:border-black hover:text-black inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <CheckCheck size={13} /> Mark all read
+                  </button>
+                )}
+
+                {notifications.length > 0 && (
+                  <button
+                    onClick={() => setShowClearConfirm(true)}
+                    className="h-8 px-3 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Trash2 size={13} /> Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Clear Confirm Modal */}
+            {showClearConfirm && (
+              <div
+                className="fixed inset-0 bg-black/40 z-[150] flex items-center justify-center p-4"
+                onClick={() => setShowClearConfirm(false)}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="bg-white rounded-2xl border border-gray-200 p-6 max-w-sm w-full shadow-xl"
+                >
+                  <h4 className="text-base font-bold text-gray-900">Clear all notifications?</h4>
+                  <p className="text-xs text-gray-500 mt-1.5 mb-5 leading-relaxed">
+                    This will remove all {notifications.length} notifications from your account.
+                  </p>
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      onClick={() => setShowClearConfirm(false)}
+                      className="flex-1 h-9 rounded-xl border border-gray-200 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={clearAllNotifications}
+                      disabled={clearingAll}
+                      className="flex-1 h-9 rounded-xl bg-black text-white text-xs font-semibold hover:bg-gray-800 transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      {clearingAll ? "Clearing..." : "Clear All"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* List */}
+            {notifsLoading && notifications.length === 0 ? (
+              <div className="py-20 flex items-center justify-center">
+                <div className="w-6 h-6 border-2 border-gray-200 border-t-black rounded-full animate-spin" />
+              </div>
+            ) : filteredNotifs.length === 0 ? (
+              <div className="border border-gray-200 rounded-2xl py-16 px-4 text-center">
+                <Bell size={26} className="text-gray-300 mx-auto mb-2.5" />
+                <p className="text-sm font-semibold text-gray-900">
+                  {notifFilter === "unread" ? "No unread notifications" : "No notifications"}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Order confirmations and delivery updates will show up here.
+                </p>
+              </div>
+            ) : (
+              <div className="border border-gray-200 rounded-2xl divide-y divide-gray-100 overflow-hidden bg-white">
+                {filteredNotifs.map((n) => (
+                  <div
+                    key={n.id}
+                    onClick={() => handleNotificationCardClick(n)}
+                    className={cn(
+                      "flex items-start justify-between gap-4 p-4 sm:px-6 transition-colors cursor-pointer",
+                      !n.isRead ? "bg-gray-50/80 hover:bg-gray-100/60" : "hover:bg-gray-50/50"
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0">
+                      <span
+                        className={cn(
+                          "w-2 h-2 rounded-full mt-1.5 shrink-0",
+                          !n.isRead ? "bg-black" : "bg-transparent"
+                        )}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p
+                            className={cn(
+                              "text-sm text-gray-900",
+                              !n.isRead ? "font-bold" : "font-medium"
+                            )}
+                          >
+                            {n.title}
+                          </p>
+                          <span className="text-xs text-gray-400">
+                            {formatNotifTime(n.createdAt)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-600 mt-0.5 leading-relaxed">{n.message}</p>
+                        {n.link && (
+                          <span className="inline-block mt-1.5 text-xs font-semibold text-gray-900 underline underline-offset-2">
+                            View order
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {!n.isRead && (
+                        <button
+                          onClick={(e) => markNotificationRead(n.id, e)}
+                          title="Mark as read"
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-black hover:bg-white transition-colors cursor-pointer"
+                        >
+                          <Check size={14} />
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => deleteNotification(n.id, e)}
+                        disabled={deletingNotifId === n.id}
+                        title="Remove"
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-white transition-colors cursor-pointer"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
       <Footer />
     </div>
   );

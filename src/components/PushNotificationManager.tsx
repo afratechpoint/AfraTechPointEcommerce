@@ -1,18 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { getToken, onMessage } from "firebase/messaging";
 import { getPushMessaging } from "@/lib/firebase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 export default function PushNotificationManager() {
   const { user } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const hasRegistered = useRef(false);
-  const debug = searchParams.get("debug") === "true";
+  // Read the debug flag from the browser only. Using useSearchParams() here
+  // (in the root layout) suspends SSR and causes a hydration mismatch.
+  const [debug, setDebug] = useState(false);
+
+  useEffect(() => {
+    setDebug(new URLSearchParams(window.location.search).get("debug") === "true");
+  }, []);
 
   // --- Manual Permission Function (Mobile Compatibility) ---
   const triggerManualPermission = async (isForAdmin = false) => {
@@ -56,11 +61,36 @@ export default function PushNotificationManager() {
   }, [user]);
 
   useEffect(() => {
-    // console.log("[Push] Manager Effect Triggered. User:", user?.email);
+    // In development, unregister any stale caching service workers so HTML/chunks never serve stale hashes
+    if (
+      process.env.NODE_ENV !== "production" &&
+      typeof window !== "undefined" &&
+      "serviceWorker" in navigator
+    ) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => regs.forEach((r) => r.unregister().catch(() => {})))
+        .catch(() => {});
+      if ("caches" in window) {
+        caches
+          .keys()
+          .then((keys) => keys.forEach((k) => caches.delete(k).catch(() => {})))
+          .catch(() => {});
+      }
+      return;
+    }
+
     if (!user || hasRegistered.current) return;
 
     const setupPush = async () => {
       try {
+        if (
+          typeof window === "undefined" ||
+          typeof Notification === "undefined" ||
+          !("serviceWorker" in navigator)
+        ) {
+          return;
+        }
         const messaging = await getPushMessaging();
         if (!messaging) return;
         

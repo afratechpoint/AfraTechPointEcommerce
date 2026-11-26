@@ -63,8 +63,7 @@ function ResetPasswordForm() {
       setTimeout(() => router.push("/login"), 3000);
     } catch (err: any) {
       setError(getFirebaseErrorMessage(err.code));
-      setStatus("loading"); // keep showing form but with error
-      setStatus("idle");
+      setStatus("idle"); // keep the form visible so the user can retry
     }
   };
 

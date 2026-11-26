@@ -5,11 +5,17 @@
 //
 // The actual UI is rendered by ProductDetailClient (a client component).
 
-import type { Metadata } from "next";
-import ProductDetailClient from "./ProductDetailClient";
-import { storage } from "@/lib/storage";
+export const dynamic = "force-dynamic";
 
-const SHOP_URL = process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop";
+import type { Metadata } from "next";
+import { Suspense } from "react";
+import ProductDetailClient from "./ProductDetailClient";
+import PremiumLoader from "@/components/PremiumLoader";
+import { storage } from "@/lib/storage";
+import { isProductOutOfStock, sanitizePublicProduct } from "@/lib/inventory";
+import { getAppUrl } from "@/lib/app-url";
+
+const SHOP_URL = getAppUrl();
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -114,7 +120,7 @@ export default async function ProductDetailPage({ params }: Props) {
 
   if (product) {
     const price = product.salePrice ?? product.regularPrice ?? product.price ?? 0;
-    const isOutOfStock = product.stock !== undefined && Number(product.stock) <= 0;
+    const isOutOfStock = isProductOutOfStock(product);
     let mainImage = product.image || `${SHOP_URL}/logo.png`;
     if (mainImage && !mainImage.startsWith("http")) {
       mainImage = `${SHOP_URL}${mainImage.startsWith("/") ? "" : "/"}${mainImage}`;
@@ -202,7 +208,11 @@ export default async function ProductDetailPage({ params }: Props) {
           dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
         />
       )}
-      <ProductDetailClient />
+      <Suspense fallback={<PremiumLoader />}>
+        <ProductDetailClient
+          initialProduct={product ? JSON.parse(JSON.stringify(sanitizePublicProduct(product))) : null}
+        />
+      </Suspense>
     </>
   );
 }

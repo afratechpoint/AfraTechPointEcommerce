@@ -1,458 +1,457 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { Save, Loader2, Store, PanelTop, PanelBottom, Instagram, Plus, Trash2, ImageIcon, X, Scissors, Check, ChevronUp, ChevronDown, ExternalLink, CreditCard, ToggleLeft, ToggleRight, Truck, Banknote } from "lucide-react";
+import React, { useEffect, useState, useRef } from "react";
+import {
+  Loader2,
+  Plus,
+  Trash2,
+  ImageIcon,
+  Scissors,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import MediaPickerModal from "@/components/admin/MediaPickerModal";
 import ImageCropperModal from "@/components/admin/ImageCropperModal";
-import { THEMES, ThemeId } from "@/lib/themes";
+import AdminSelect from "@/components/admin/AdminSelect";
 import { authenticatedFetch } from "@/lib/api-helper";
 
-interface Settings {
-  storeName: string;
-  logoUrl: string;
-  shortDescription: string;
-  currencySymbol: string;
-  themeId: ThemeId;
-  announcementText: string;
-  announcementActive: boolean;
-  categories: any[];
-  contactEmail?: string;
-  contactPhone?: string;
-  contactAddress?: string;
-  businessHours?: string;
-  signatureUrl?: string;
+interface NavItem {
+  id: string;
+  label: string;
+  href: string;
 }
 
-const currencies = [
-  { label: "US Dollar ($)", symbol: "$" },
-  { label: "Bangladeshi Taka (৳)", symbol: "৳" },
-  { label: "Euro (€)", symbol: "€" },
-  { label: "British Pound (£)", symbol: "£" },
-  { label: "Indian Rupee (₹)", symbol: "₹" },
-  { label: "Japanese Yen (¥)", symbol: "¥" },
-  { label: "Canadian Dollar (C$)", symbol: "C$" },
-  { label: "Australian Dollar (A$)", symbol: "A$" },
+interface SocialItem {
+  id: string;
+  platform: string;
+  url: string;
+}
+
+interface PaymentMethodItem {
+  id: string;
+  name: string;
+  accountNumber: string;
+  enabled: boolean;
+}
+
+const CURRENCY_OPTIONS = [
+  { value: "৳", label: "Bangladeshi Taka (৳)" },
+  { value: "$", label: "US Dollar ($)" },
+  { value: "€", label: "Euro (€)" },
+  { value: "£", label: "British Pound (£)" },
+  { value: "₹", label: "Indian Rupee (₹)" },
+  { value: "¥", label: "Japanese Yen (¥)" },
+  { value: "C$", label: "Canadian Dollar (C$)" },
+  { value: "A$", label: "Australian Dollar (A$)" },
 ];
 
-function ListEditor({ title, description, icon: Icon, items, setItems, isSocial = false, iconColor = "bg-purple-50 text-purple-600" }: any) {
+const SOCIAL_PLATFORMS = [
+  "Facebook",
+  "Instagram",
+  "Twitter / X",
+  "LinkedIn",
+  "YouTube",
+  "WhatsApp",
+  "Telegram",
+  "Pinterest",
+  "TikTok",
+];
+
+const SOCIAL_PLATFORM_OPTIONS = [
+  ...SOCIAL_PLATFORMS.map((p) => ({ value: p, label: p })),
+  { value: "Custom", label: "Custom…" },
+];
+
+const CORE_PROVIDERS = ["bKash", "Nagad", "Rocket"];
+
+const INPUT =
+  "w-full h-10 px-3.5 rounded-xl bg-white border border-gray-200 hover:border-gray-300 focus:border-black focus:ring-2 focus:ring-black/5 outline-none transition-all text-sm text-gray-900 placeholder:text-gray-400";
+
+function Switch({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      className={cn(
+        "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer",
+        checked ? "bg-black" : "bg-gray-200"
+      )}
+    >
+      <span
+        className={cn(
+          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-xs transition-transform",
+          checked ? "translate-x-5" : "translate-x-0"
+        )}
+      />
+    </button>
+  );
+}
+
+function NavigationEditor({
+  title,
+  items,
+  setItems,
+  predefinedItems,
+  labelPlaceholder = "Label",
+  linkPlaceholder = "/path",
+}: {
+  title: string;
+  items: NavItem[];
+  setItems: React.Dispatch<React.SetStateAction<NavItem[]>>;
+  predefinedItems?: { label: string; href: string }[];
+  labelPlaceholder?: string;
+  linkPlaceholder?: string;
+}) {
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowAddMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, []);
+
+  const addItem = (label = "", href = "") => {
+    setItems((prev) => [...prev, { id: Date.now().toString(), label, href }]);
+    setShowAddMenu(false);
+  };
+
+  const updateItem = (id: string, field: "label" | "href", value: string) => {
+    setItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const removeItem = (id: string) => {
+    setItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const moveItem = (index: number, direction: "up" | "down") => {
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    [next[index], next[target]] = [next[target], next[index]];
+    setItems(next);
+  };
+
+  const quickPages =
+    predefinedItems && predefinedItems.length > 0
+      ? predefinedItems
+      : [
+          { label: "Home", href: "/" },
+          { label: "Shop", href: "/shop" },
+          { label: "About", href: "/about" },
+          { label: "Contact", href: "/contact" },
+          { label: "Cart", href: "/cart" },
+        ];
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200/80">
+      <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-gray-950">{title}</h2>
+
+        <div ref={menuRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setShowAddMenu((prev) => !prev)}
+            className="h-8 px-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-900 text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Plus size={13} /> Add Link
+            <ChevronDown
+              size={12}
+              className={cn("text-gray-400 transition-transform", showAddMenu && "rotate-180")}
+            />
+          </button>
+
+          {showAddMenu && (
+            <div className="absolute right-0 mt-1.5 w-44 bg-white rounded-xl shadow-lg border border-gray-200 py-1 z-50">
+              {quickPages.map((page) => (
+                <button
+                  key={`${page.label}-${page.href}`}
+                  type="button"
+                  onClick={() => addItem(page.label, page.href)}
+                  className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 hover:text-gray-950 transition-colors cursor-pointer"
+                >
+                  {page.label}
+                </button>
+              ))}
+              <div className="h-px bg-gray-100 my-1" />
+              <button
+                type="button"
+                onClick={() => addItem("", "")}
+                className="w-full text-left px-3 py-1.5 text-xs font-semibold text-gray-950 hover:bg-gray-50 transition-colors cursor-pointer"
+              >
+                + Custom Link
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="px-5 py-10 text-center text-xs text-gray-400">
+          No links added yet.
+        </div>
+      ) : (
+        <div className="divide-y divide-gray-100">
+          {items.map((item, index) => (
+            <div
+              key={item.id}
+              className="px-5 py-3 grid grid-cols-1 sm:grid-cols-[56px_minmax(0,1fr)_minmax(0,1.4fr)_36px] gap-2.5 items-center"
+            >
+              <div className="flex items-center justify-between sm:justify-start gap-1">
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => moveItem(index, "up")}
+                    disabled={index === 0}
+                    className="w-6 h-6 rounded-md text-gray-400 hover:text-black hover:bg-gray-100 disabled:opacity-25 disabled:pointer-events-none flex items-center justify-center cursor-pointer"
+                  >
+                    <ChevronUp size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveItem(index, "down")}
+                    disabled={index === items.length - 1}
+                    className="w-6 h-6 rounded-md text-gray-400 hover:text-black hover:bg-gray-100 disabled:opacity-25 disabled:pointer-events-none flex items-center justify-center cursor-pointer"
+                  >
+                    <ChevronDown size={14} />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeItem(item.id)}
+                  className="sm:hidden text-gray-400 hover:text-red-600 p-1 cursor-pointer"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              <input
+                type="text"
+                value={item.label || ""}
+                onChange={(e) => updateItem(item.id, "label", e.target.value)}
+                placeholder={labelPlaceholder}
+                className={INPUT}
+              />
+
+              <input
+                type="text"
+                value={item.href || ""}
+                onChange={(e) => updateItem(item.id, "href", e.target.value)}
+                placeholder={linkPlaceholder}
+                className={cn(INPUT, "font-mono text-xs")}
+              />
+
+              <button
+                type="button"
+                onClick={() => removeItem(item.id)}
+                title="Remove"
+                className="hidden sm:flex w-9 h-9 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 items-center justify-center transition-colors cursor-pointer"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SocialMediaEditor({
+  items,
+  setItems,
+}: {
+  items: SocialItem[];
+  setItems: React.Dispatch<React.SetStateAction<SocialItem[]>>;
+}) {
   const addItem = () => {
-    setItems([...items, { id: Date.now().toString(), [isSocial ? 'platform' : 'label']: '', [isSocial ? 'url' : 'href']: '' }]);
+    setItems((prev) => [
+      ...prev,
+      { id: Date.now().toString(), platform: "Facebook", url: "" },
+    ]);
   };
 
-  const updateItem = (id: string, field: string, value: string) => {
-    setItems(items.map((i: any) => i.id === id ? { ...i, [field]: value } : i));
-  };
-
-  const removeItem = (id: string) => {
-    setItems(items.filter((i: any) => i.id !== id));
-  };
-
-  return (
-    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
-      <div className="p-6 border-b border-gray-50 bg-gray-50/30 flex justify-between items-center">
-         <div className="flex items-center gap-3">
-           <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${iconColor}`}>
-              <Icon size={16} />
-           </div>
-           <div>
-              <h3 className="font-bold text-gray-900">{title}</h3>
-              <p className="text-[10px] text-gray-500 font-medium">{description}</p>
-           </div>
-         </div>
-         <button 
-           type="button" 
-           onClick={addItem}
-           className="text-xs font-bold bg-black text-white px-4 py-2 rounded-xl flex items-center gap-1.5 hover:scale-105 transition-transform"
-         >
-           <Plus size={14} /> Add Item
-         </button>
-      </div>
-      <div className="p-6 space-y-4 bg-gray-50/10 min-h-[400px] content-start">
-        {items.length === 0 ? (
-          <p className="text-center text-xs text-gray-400 font-medium italic p-4">No items configured yet.</p>
-        ) : items.map((item: any) => (
-          <div key={item.id} className="flex flex-col md:flex-row gap-4 items-start bg-white md:bg-transparent p-4 md:p-0 rounded-2xl md:rounded-none border border-gray-100 md:border-none">
-            <div className="flex-1 space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">{isSocial ? 'Platform Name' : 'Display Label'}</label>
-              <input 
-                value={isSocial ? item.platform : item.label} 
-                onChange={(e) => updateItem(item.id, isSocial ? 'platform' : 'label', e.target.value)}
-                placeholder={isSocial ? "e.g. Facebook" : "e.g. Home"}
-                className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" 
-              />
-            </div>
-            <div className="flex-[2] space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">{isSocial ? 'URL Link' : 'Target Path'}</label>
-              <div className="flex gap-2">
-                <input 
-                  value={isSocial ? item.url : item.href} 
-                  onChange={(e) => updateItem(item.id, isSocial ? 'url' : 'href', e.target.value)}
-                  placeholder={isSocial ? "https://..." : "/"}
-                  className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" 
-                />
-                <button 
-                  type="button" 
-                  onClick={() => removeItem(item.id)}
-                  className="w-10 h-10 shrink-0 rounded-xl bg-red-50 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-colors"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NavigationEditor({ title, description, icon: Icon, items, setItems, predefinedItems, labelName = "Display Label", linkName = "Target Path", iconColor = "bg-purple-50 text-purple-600" }: any) {
-  const [showAddMenu, setShowAddMenu] = useState(false);
-
-  const addItem = (label = '', href = '') => {
-    setItems([...items, { id: Date.now().toString(), label, href }]);
-    setShowAddMenu(false);
-  };
-
-  const updateItem = (id: string, field: string, value: string) => {
-    setItems(items.map((i: any) => i.id === id ? { ...i, [field]: value } : i));
+  const updateItem = (id: string, field: "platform" | "url", value: string) => {
+    setItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
   };
 
   const removeItem = (id: string) => {
-    setItems(items.filter((i: any) => i.id !== id));
+    setItems((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const moveItem = (index: number, direction: 'up' | 'down') => {
-    const newItems = [...items];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex >= 0 && targetIndex < newItems.length) {
-      [newItems[index], newItems[targetIndex]] = [newItems[targetIndex], newItems[index]];
-      setItems(newItems);
-    }
+  const moveItem = (index: number, direction: "up" | "down") => {
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    [next[index], next[target]] = [next[target], next[index]];
+    setItems(next);
   };
-
-  const PREDEFINED_PAGES = predefinedItems || [
-    { label: "Home", href: "/" },
-    { label: "Shop", href: "/shop" },
-    { label: "About", href: "/about" },
-    { label: "Contact", href: "/contact" },
-    { label: "Cart", href: "/cart" },
-  ];
 
   return (
-    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
-      <div className="p-6 border-b border-gray-50 bg-gray-50/30 flex justify-between items-center relative">
-         <div className="flex items-center gap-3">
-           <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${iconColor}`}>
-              <Icon size={16} />
-           </div>
-           <div>
-              <h3 className="font-bold text-gray-900">{title}</h3>
-              <p className="text-[10px] text-gray-500 font-medium">{description}</p>
-           </div>
-         </div>
-         
-         <div className="relative">
-            <button 
-              type="button" 
-              onClick={() => setShowAddMenu(!showAddMenu)}
-              className="text-xs font-bold bg-black text-white px-4 py-2 rounded-xl flex items-center gap-1.5 hover:scale-105 transition-transform"
-            >
-              <Plus size={14} /> Add Item
-            </button>
-            
-            {showAddMenu && (
-              <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-200">
-                <div className="px-3 py-1 mb-1">
-                  <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Quick Add Page</span>
-                </div>
-                {PREDEFINED_PAGES.map((page: any) => (
+    <div className="bg-white rounded-2xl border border-gray-200/80">
+      <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-gray-950">Social Links</h2>
+        <button
+          type="button"
+          onClick={addItem}
+          className="h-8 px-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-900 text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+        >
+          <Plus size={13} /> Add Profile
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="px-5 py-10 text-center text-xs text-gray-400">
+          No social profiles added yet.
+        </div>
+      ) : (
+        <div className="divide-y divide-gray-100">
+          {items.map((item, index) => {
+            const isKnown = SOCIAL_PLATFORMS.includes(item.platform);
+            const selectValue = isKnown ? item.platform : "Custom";
+
+            return (
+              <div
+                key={item.id}
+                className="px-5 py-3 grid grid-cols-1 sm:grid-cols-[56px_180px_minmax(0,1fr)_36px] gap-2.5 items-start"
+              >
+                <div className="flex items-center justify-between sm:justify-start gap-1 sm:pt-2">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => moveItem(index, "up")}
+                      disabled={index === 0}
+                      className="w-6 h-6 rounded-md text-gray-400 hover:text-black hover:bg-gray-100 disabled:opacity-25 disabled:pointer-events-none flex items-center justify-center cursor-pointer"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveItem(index, "down")}
+                      disabled={index === items.length - 1}
+                      className="w-6 h-6 rounded-md text-gray-400 hover:text-black hover:bg-gray-100 disabled:opacity-25 disabled:pointer-events-none flex items-center justify-center cursor-pointer"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
                   <button
-                    key={page.href}
                     type="button"
-                    onClick={() => addItem(page.label, page.href)}
-                    className="w-full text-left px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 hover:text-black transition-colors"
+                    onClick={() => removeItem(item.id)}
+                    className="sm:hidden text-gray-400 hover:text-red-600 p-1 cursor-pointer"
                   >
-                    {page.label}
+                    <Trash2 size={14} />
                   </button>
-                ))}
-                <div className="h-px bg-gray-50 my-1" />
+                </div>
+
+                <div className="space-y-1.5">
+                  <AdminSelect
+                    value={selectValue}
+                    onChange={(val) =>
+                      updateItem(item.id, "platform", val === "Custom" ? "" : val)
+                    }
+                    options={SOCIAL_PLATFORM_OPTIONS}
+                  />
+                  {!isKnown && (
+                    <input
+                      type="text"
+                      value={item.platform || ""}
+                      onChange={(e) => updateItem(item.id, "platform", e.target.value)}
+                      placeholder="Platform name"
+                      className="w-full h-9 px-3 rounded-lg bg-white border border-gray-200 focus:border-black outline-none text-xs text-gray-900"
+                    />
+                  )}
+                </div>
+
+                <input
+                  type="url"
+                  value={item.url || ""}
+                  onChange={(e) => updateItem(item.id, "url", e.target.value)}
+                  placeholder="https://facebook.com/yourpage"
+                  className={INPUT}
+                />
+
                 <button
                   type="button"
-                  onClick={() => addItem()}
-                  className="w-full text-left px-4 py-2 text-xs font-bold text-indigo-600 hover:bg-indigo-50 transition-colors"
-                >
-                  + Custom Link
-                </button>
-              </div>
-            )}
-         </div>
-      </div>
-      <div className="p-6 space-y-4 bg-gray-50/10 min-h-[400px] content-start">
-        {items.length === 0 ? (
-          <p className="text-center text-xs text-gray-400 font-medium italic p-4">No items configured yet.</p>
-        ) : items.map((item: any, index: number) => (
-          <div key={item.id} className="flex flex-col md:flex-row gap-4 items-center md:items-end bg-white p-4 rounded-2xl border border-gray-100 shadow-sm group animate-in slide-in-from-right-2 duration-300">
-            {/* Reorder controls */}
-            <div className="flex md:flex-col gap-1 pr-2 border-b md:border-b-0 md:border-r border-gray-50 pb-2 md:pb-0 w-full md:w-auto justify-center">
-               <button 
-                type="button"
-                onClick={() => moveItem(index, 'up')}
-                disabled={index === 0}
-                className="p-1 hover:bg-gray-100 rounded-md disabled:opacity-30 transition-colors text-gray-400 hover:text-black flex items-center justify-center font-bold"
-               >
-                 <ChevronUp size={14} />
-                 <span className="md:hidden text-[10px] ml-1">Move Up</span>
-               </button>
-               <button 
-                type="button"
-                onClick={() => moveItem(index, 'down')}
-                disabled={index === items.length - 1}
-                className="p-1 hover:bg-gray-100 rounded-md disabled:opacity-30 transition-colors text-gray-400 hover:text-black flex items-center justify-center font-bold"
-               >
-                 <ChevronDown size={14} />
-                 <span className="md:hidden text-[10px] ml-1">Move Down</span>
-               </button>
-            </div>
-            
-            <div className="flex-1 space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">{labelName}</label>
-              <input 
-                value={item.label} 
-                onChange={(e) => updateItem(item.id, 'label', e.target.value)}
-                placeholder={`e.g. ${labelName}`}
-                className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" 
-              />
-            </div>
-            <div className="flex-[2] space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">{linkName}</label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <input 
-                    value={item.href} 
-                    onChange={(e) => updateItem(item.id, 'href', e.target.value)}
-                    placeholder="/"
-                    className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium pr-10" 
-                  />
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300">
-                    <ExternalLink size={12} />
-                  </div>
-                </div>
-                <button 
-                  type="button" 
                   onClick={() => removeItem(item.id)}
-                  className="w-10 h-10 shrink-0 rounded-xl bg-red-50 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-colors"
+                  title="Remove"
+                  className="hidden sm:flex w-9 h-9 mt-0.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 items-center justify-center transition-colors cursor-pointer"
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={15} />
                 </button>
               </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SocialMediaEditor({ title, description, icon: Icon, items, setItems, iconColor = "bg-purple-50 text-purple-600" }: any) {
-  const [showAddMenu, setShowAddMenu] = useState(false);
-
-  const addItem = (platform = '', url = '') => {
-    setItems([...items, { id: Date.now().toString(), platform, url }]);
-    setShowAddMenu(false);
-  };
-
-  const updateItem = (id: string, field: string, value: string) => {
-    setItems(items.map((i: any) => i.id === id ? { ...i, [field]: value } : i));
-  };
-
-  const removeItem = (id: string) => {
-    setItems(items.filter((i: any) => i.id !== id));
-  };
-
-  const moveItem = (index: number, direction: 'up' | 'down') => {
-    const newItems = [...items];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex >= 0 && targetIndex < newItems.length) {
-      [newItems[index], newItems[targetIndex]] = [newItems[targetIndex], newItems[index]];
-      setItems(newItems);
-    }
-  };
-
-  const PLATFORMS = ["Facebook", "Instagram", "Twitter / X", "LinkedIn", "YouTube", "WhatsApp", "Telegram", "Pinterest", "TikTok"];
-
-  return (
-    <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
-      <div className="p-6 border-b border-gray-50 bg-gray-50/30 flex justify-between items-center relative">
-         <div className="flex items-center gap-3">
-           <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${iconColor}`}>
-              <Icon size={16} />
-           </div>
-           <div>
-              <h3 className="font-bold text-gray-900">{title}</h3>
-              <p className="text-[10px] text-gray-500 font-medium">{description}</p>
-           </div>
-         </div>
-         
-         <div className="relative">
-            <button 
-              type="button" 
-              onClick={() => setShowAddMenu(!showAddMenu)}
-              className="text-xs font-bold bg-black text-white px-4 py-2 rounded-xl flex items-center gap-1.5 hover:scale-105 transition-transform"
-            >
-              <Plus size={14} /> Add Social Link
-            </button>
-            
-            {showAddMenu && (
-              <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-50 animate-in fade-in zoom-in-95 duration-200">
-                <div className="px-3 py-1 mb-1">
-                  <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Choose Platform</span>
-                </div>
-                {PLATFORMS.map(plat => (
-                  <button
-                    key={plat}
-                    type="button"
-                    onClick={() => addItem(plat)}
-                    className="w-full text-left px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 hover:text-black transition-colors"
-                  >
-                    {plat}
-                  </button>
-                ))}
-                <div className="h-px bg-gray-50 my-1" />
-                <button
-                  type="button"
-                  onClick={() => addItem()}
-                  className="w-full text-left px-4 py-2 text-xs font-bold text-indigo-600 hover:bg-indigo-50 transition-colors"
-                >
-                  + Custom Platform
-                </button>
-              </div>
-            )}
-         </div>
-      </div>
-      <div className="p-6 space-y-4 bg-gray-50/10 min-h-[400px] content-start">
-        {items.length === 0 ? (
-          <p className="text-center text-xs text-gray-400 font-medium italic p-4">No social links configured yet.</p>
-        ) : items.map((item: any, index: number) => (
-          <div key={item.id} className="flex flex-col md:flex-row gap-4 md:items-end bg-white p-4 rounded-2xl border border-gray-100 shadow-sm group animate-in slide-in-from-right-2 duration-300">
-            {/* Reorder controls */}
-            <div className="flex md:flex-col gap-1 pr-2 border-b md:border-b-0 md:border-r border-gray-50 pb-2 md:pb-0 w-full md:w-auto justify-center">
-               <button 
-                type="button"
-                onClick={() => moveItem(index, 'up')}
-                disabled={index === 0}
-                className="p-1 hover:bg-gray-100 rounded-md disabled:opacity-30 transition-colors text-gray-400 hover:text-black flex items-center justify-center"
-               >
-                 <ChevronUp size={14} />
-                 <span className="md:hidden text-[10px] ml-1">Move Up</span>
-               </button>
-               <button 
-                type="button"
-                onClick={() => moveItem(index, 'down')}
-                disabled={index === items.length - 1}
-                className="p-1 hover:bg-gray-100 rounded-md disabled:opacity-30 transition-colors text-gray-400 hover:text-black flex items-center justify-center"
-               >
-                 <ChevronDown size={14} />
-                 <span className="md:hidden text-[10px] ml-1">Move Down</span>
-               </button>
-            </div>
-            
-            <div className="flex-1 space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Platform</label>
-              <div className="relative">
-                <select 
-                  value={PLATFORMS.includes(item.platform) ? item.platform : "Custom"}
-                  onChange={(e) => updateItem(item.id, 'platform', e.target.value === "Custom" ? "" : e.target.value)}
-                  className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-xs font-bold appearance-none pr-10"
-                >
-                  {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
-                  <option value="Custom">Custom...</option>
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
-                  <ChevronDown size={12} />
-                </div>
-              </div>
-              {!PLATFORMS.includes(item.platform) && item.platform !== "Custom" && (
-                <input 
-                  value={item.platform} 
-                  onChange={(e) => updateItem(item.id, 'platform', e.target.value)}
-                  placeholder="Platform Name"
-                  className="w-full h-8 px-3 rounded-lg bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-[10px] font-bold mt-1" 
-                />
-              )}
-            </div>
-            
-            <div className="flex-[2] space-y-1.5">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Profile URL</label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <input 
-                    value={item.url} 
-                    onChange={(e) => updateItem(item.id, 'url', e.target.value)}
-                    placeholder="https://..."
-                    className="w-full h-10 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium pr-10" 
-                  />
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300">
-                    <ExternalLink size={12} />
-                  </div>
-                </div>
-                <button 
-                  type="button" 
-                  onClick={() => removeItem(item.id)}
-                  className="w-10 h-10 shrink-0 rounded-xl bg-red-50 text-red-500 hover:bg-red-500 hover:text-white flex items-center justify-center transition-colors"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 export default function AdminSettings() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [navLinks, setNavLinks] = useState<any[]>([]);
-  const [socialLinks, setSocialLinks] = useState<any[]>([]);
-  const [footerProducts, setFooterProducts] = useState<any[]>([]);
-  const [footerCompany, setFooterCompany] = useState<any[]>([]);
-  const [paymentMethods, setPaymentMethods] = useState<{ id: string; name: string; accountNumber: string; enabled: boolean }[]>([]);
+  const [storeName, setStoreName] = useState("");
+  const [shortDescription, setShortDescription] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [signatureUrl, setSignatureUrl] = useState("");
+  const [currencySymbol, setCurrencySymbol] = useState("৳");
+  const [announcementText, setAnnouncementText] = useState("");
+  const [announcementActive, setAnnouncementActive] = useState(false);
+
+  const [categories, setCategories] = useState<any[]>([]);
+  const [navLinks, setNavLinks] = useState<NavItem[]>([]);
+  const [socialLinks, setSocialLinks] = useState<SocialItem[]>([]);
+  const [footerProducts, setFooterProducts] = useState<NavItem[]>([]);
+  const [footerCompany, setFooterCompany] = useState<NavItem[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>([]);
   const [codEnabled, setCodEnabled] = useState<boolean>(true);
-  const [deliveryCharge, setDeliveryCharge] = useState<number>(0);
-  
+  const [deliveryCharge, setDeliveryCharge] = useState<string>("0");
+
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"general" | "header" | "footer" | "social">("general");
-  const [logoUrl, setLogoUrl] = useState("");
-  const [signatureUrl, setSignatureUrl] = useState("");
-  const [currencySymbol, setCurrencySymbol] = useState("$");
+
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
   const [pickingFor, setPickingFor] = useState<"logo" | "signature" | null>(null);
   const [isCropperOpen, setIsCropperOpen] = useState(false);
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [isCropping, setIsCropping] = useState(false);
-  const [themeId, setThemeId] = useState<ThemeId>("midnight");
 
   useEffect(() => {
     authenticatedFetch("/api/settings")
       .then((res) => res.json())
       .then((data) => {
-        setSettings(data);
+        setStoreName(data.storeName || "");
+        setShortDescription(data.shortDescription || "");
         setLogoUrl(data.logoUrl || "");
         setSignatureUrl(data.signatureUrl || "");
         setCurrencySymbol(data.currencySymbol || "৳");
-        setThemeId(data.themeId || "midnight");
-        setNavLinks(data.navLinks || []);
-        setSocialLinks(data.socialLinks || []);
-        setFooterProducts(data.footerProducts || []);
-        setFooterCompany(data.footerCompany || []);
-        setPaymentMethods(data.paymentMethods || []);
+        setAnnouncementText(data.announcementText || "");
+        setAnnouncementActive(Boolean(data.announcementActive));
+        setCategories(Array.isArray(data.categories) ? data.categories : []);
+        setNavLinks(Array.isArray(data.navLinks) ? data.navLinks : []);
+        setSocialLinks(Array.isArray(data.socialLinks) ? data.socialLinks : []);
+        setFooterProducts(Array.isArray(data.footerProducts) ? data.footerProducts : []);
+        setFooterCompany(Array.isArray(data.footerCompany) ? data.footerCompany : []);
+        setPaymentMethods(Array.isArray(data.paymentMethods) ? data.paymentMethods : []);
         setCodEnabled(data.codEnabled !== false);
-        setDeliveryCharge(Number(data.deliveryCharge) || 0);
+        setDeliveryCharge(String(Number(data.deliveryCharge) || 0));
         setIsLoading(false);
       })
       .catch((err) => {
@@ -461,46 +460,41 @@ export default function AdminSettings() {
       });
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleSave = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setIsSaving(true);
-    
-    const formData = new FormData(e.currentTarget);
-    const data: any = Object.fromEntries(formData.entries());
-    
-    // Explicitly handle checkbox (it's omitted completely from formData if unchecked)
-    data.announcementActive = formData.get('announcementActive') === 'on' ? true : false;
 
     try {
       const res = await authenticatedFetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...data,
+          storeName: storeName.trim(),
+          shortDescription: shortDescription.trim(),
           logoUrl,
           signatureUrl,
           currencySymbol,
-          themeId,
+          themeId: "midnight",
+          announcementText: announcementText.trim(),
+          announcementActive,
           navLinks,
           socialLinks,
           footerProducts,
           footerCompany,
           paymentMethods,
           codEnabled,
-          deliveryCharge: Number(deliveryCharge),
+          deliveryCharge: Math.max(0, Number(deliveryCharge) || 0),
         }),
       });
 
       if (res.ok) {
-        toast.success("Settings updated successfully!");
-        const updated = await res.json();
-        setSettings(updated);
+        toast.success("Settings saved");
       } else {
         const errorData = await res.json().catch(() => null);
-        throw new Error(errorData?.error || "Failed to update");
+        throw new Error(errorData?.error || "Failed to save settings");
       }
     } catch (error: any) {
-      toast.error(error.message || "Failed to save settings.");
+      toast.error(error.message || "Failed to save settings");
     } finally {
       setIsSaving(false);
     }
@@ -509,9 +503,7 @@ export default function AdminSettings() {
   const handleCropComplete = async (blob: Blob) => {
     setIsCropping(true);
     const formData = new FormData();
-    // Rename with timestamp to ensure uniqueness and identifiable as cropped
-    const fileName = `cropped-logo-${Date.now()}.jpg`;
-    formData.append("files", blob, fileName);
+    formData.append("files", blob, `cropped-logo-${Date.now()}.jpg`);
 
     try {
       const res = await authenticatedFetch("/api/upload", {
@@ -521,10 +513,10 @@ export default function AdminSettings() {
       const data = await res.json();
       if (data.success && data.files.length > 0) {
         setLogoUrl(data.files[0].url);
-        toast.success("Logo cropped and updated!");
+        toast.success("Logo updated");
       }
-    } catch (error) {
-      toast.error("Failed to upload cropped image.");
+    } catch {
+      toast.error("Failed to upload cropped logo");
     } finally {
       setIsCropping(false);
       setIsCropperOpen(false);
@@ -534,462 +526,400 @@ export default function AdminSettings() {
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center text-gray-400">
-        <Loader2 className="animate-spin" size={32} />
+        <Loader2 className="animate-spin" size={24} />
       </div>
     );
   }
 
   const tabs = [
-    { id: "general", label: "General", icon: Store },
-    { id: "header", label: "Header", icon: PanelTop },
-    { id: "footer", label: "Footer", icon: PanelBottom },
-    { id: "social", label: "Social", icon: Instagram },
-  ];
+    { id: "general", label: "General" },
+    { id: "header", label: "Header" },
+    { id: "footer", label: "Footer" },
+    { id: "social", label: "Social" },
+  ] as const;
 
   return (
-    <div className="max-w-4xl w-full min-w-0 mx-auto space-y-6">
-      
-      {/* Sub-menu Tabs */}
-      <div className="flex space-x-2 bg-gray-50/50 p-1.5 rounded-2xl border border-gray-100 overflow-x-auto">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={cn(
-                "flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
-                isActive
-                  ? "bg-white text-black shadow-sm shadow-black/5"
-                  : "bg-transparent text-gray-500 hover:bg-white/50 hover:text-black"
-              )}
-            >
-              <Icon size={14} className={isActive ? "text-indigo-600" : "text-gray-400"} />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-8 mt-6">
-        
-        {/* General Settings */}
-        {activeTab === "general" && (
-          <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="p-6 border-b border-gray-50 bg-gray-50/30 flex items-center gap-3">
-               <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <Store size={16} />
-               </div>
-               <div>
-                  <h3 className="font-bold text-gray-900">General Information</h3>
-                  <p className="text-[10px] text-gray-500 font-medium">Core details about your digital storefront.</p>
-               </div>
-            </div>
-            <div className="p-6 space-y-6 min-h-[400px]">
-              {/* Store Name + Logo row */}
-              <input type="hidden" name="logoUrl" value={logoUrl} />
-              <div className="flex flex-col-reverse md:flex-row items-center md:items-start gap-8">
-                 {/* Left side: Inputs */}
-                 <div className="flex-1 space-y-6">
-                   <div className="space-y-1.5">
-                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Store Name</label>
-                     <input
-                       name="storeName"
-                       defaultValue={settings?.storeName}
-                       className="w-full h-12 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium"
-                     />
-                   </div>
-
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                     <div className="space-y-1.5">
-                       <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Currency Symbol</label>
-                       <select 
-                         value={currencySymbol}
-                         onChange={(e) => setCurrencySymbol(e.target.value)}
-                         className="w-full h-12 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium appearance-none cursor-pointer"
-                       >
-                         {currencies.map((c) => (
-                           <option key={c.symbol} value={c.symbol}>
-                             {c.label}
-                           </option>
-                         ))}
-                       </select>
-                     </div>
-                     <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Theme Palette</label>
-                        <div className="flex flex-wrap gap-3">
-                          {Object.values(THEMES).map((t) => (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => setThemeId(t.id as any)}
-                              className={cn(
-                                "relative w-14 h-12 rounded-xl border-2 transition-all p-0.5 shrink-0",
-                                themeId === t.id ? "border-black scale-105 shadow-sm" : "border-transparent hover:scale-105"
-                              )}
-                              title={t.name}
-                            >
-                              <div className="w-full h-full rounded-lg overflow-hidden flex flex-col">
-                                <div style={{ backgroundColor: t.primary }} className="flex-1 w-full" />
-                                <div style={{ backgroundColor: t.hover }} className="flex-1 w-full" />
-                              </div>
-                              {themeId === t.id && (
-                                <div className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black text-white rounded-full flex items-center justify-center border-2 border-white shadow-sm">
-                                  <Check size={10} strokeWidth={4} />
-                                </div>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                   </div>
-                 </div>
-
-                 {/* Right side: Image uploads */}
-                 <div className="space-y-6 shrink-0">
-                   <div className="space-y-1.5">
-                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Store Logo (512x512)</label>
-
-                   <div className="relative group">
-                     <button
-                       type="button"
-                       onClick={() => { setPickingFor("logo"); setIsMediaPickerOpen(true); }}
-                       className="relative w-40 h-40 rounded-2xl bg-gray-50 ring-1 ring-gray-100 overflow-hidden group hover:ring-2 hover:ring-black transition-all flex items-center justify-center p-0"
-                       title="Click to choose logo from Media Library"
-                     >
-                       {logoUrl
-                         ? <img src={logoUrl} alt="Logo" className="w-full h-full object-contain p-2" />
-                         : <div className="flex flex-col items-center gap-1 text-gray-300">
-                             <ImageIcon size={20} />
-                             <span className="text-[9px] font-bold uppercase tracking-widest">Set Logo</span>
-                           </div>}
-                       <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-xl">
-                         <ImageIcon size={16} className="text-white" />
-                         <span className="text-[9px] font-bold text-white uppercase tracking-widest">Select New</span>
-                       </div>
-                     </button>
-
-                     {logoUrl && (
-                       <button
-                         type="button"
-                         onClick={(e) => {
-                           e.stopPropagation();
-                           setImageToCrop(logoUrl);
-                           setIsCropperOpen(true);
-                         }}
-                         className="absolute -top-3 -right-3 w-10 h-10 rounded-2xl bg-white shadow-xl border border-gray-100 flex items-center justify-center text-black hover:scale-110 active:scale-95 transition-all z-10 group/edit"
-                       >
-                         {isCropping ? <Loader2 size={16} className="animate-spin" /> : <Scissors size={16} />}
-                         <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black text-white text-[8px] font-black rounded-lg opacity-0 group-hover/edit:opacity-100 transition-opacity whitespace-nowrap">Edit/Crop</span>
-                       </button>
-                     )}
-                   </div>
-                   </div>
-
-                   {/* Signature Picker UI - Now Integrated with Media Library */}
-                    <div className="space-y-1.5 pt-4">
-                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Invoice Signature Image</label>
-                      <p className="text-[10px] text-gray-400 mb-2">Upload a transparent PNG signature.</p>
-                      <div className="relative group/sig">
-                        <button
-                          type="button"
-                          onClick={() => { setPickingFor("signature"); setIsMediaPickerOpen(true); }}
-                          className="relative w-40 h-20 rounded-2xl bg-gray-50 ring-1 ring-gray-100 overflow-hidden group hover:ring-2 hover:ring-black transition-all flex items-center justify-center p-0"
-                          title="Select signature from Media Library"
-                        >
-                          {signatureUrl
-                            ? <img src={signatureUrl} alt="Signature" className="w-full h-full object-contain p-2" />
-                            : <div className="flex flex-col items-center gap-1 text-gray-300">
-                                <ImageIcon size={20} />
-                                <span className="text-[9px] font-bold uppercase tracking-widest">Set Sign</span>
-                              </div>}
-                          <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 rounded-xl">
-                            <ImageIcon size={16} className="text-white" />
-                            <span className="text-[9px] font-bold text-white uppercase tracking-widest">Select New</span>
-                          </div>
-                        </button>
-
-                        {signatureUrl && (
-                          <button
-                            type="button"
-                            onClick={() => setSignatureUrl("")}
-                            className="absolute -top-2 -right-2 w-7 h-7 rounded-xl bg-white shadow-lg border border-gray-100 flex items-center justify-center text-red-500 hover:bg-red-500 hover:text-white transition-all z-10"
-                            title="Remove Signature"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                      <input
-                        type="hidden"
-                        name="signatureUrl"
-                        value={signatureUrl}
-                      />
-                    </div>
-                 </div>
-              </div>
-
-
-              <div className="space-y-1.5 md:col-span-2">
-                <div className="flex items-center justify-between ml-1 mb-1.5">
-                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Top Announcement Bar</label>
-                   <label className="flex items-center gap-2 cursor-pointer">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Active</span>
-                      <input 
-                         type="checkbox" 
-                         name="announcementActive" 
-                         defaultChecked={settings?.announcementActive}
-                         className="w-4 h-4 rounded text-black bg-gray-100 border-none focus:ring-black focus:ring-offset-0" 
-                      />
-                   </label>
-                </div>
-                <input 
-                  name="announcementText" 
-                  defaultValue={settings?.announcementText || "Free shipping on all orders over $50! Shop now."} 
-                  placeholder="e.g. Big Winter Sale up to 50% Off!"
-                  className="w-full h-12 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" 
-                />
-              </div>
-
-              {/* ── Contact Info Block ── */}
-              <div className="md:col-span-2 pt-6 border-t border-gray-100 mt-6 space-y-4">
-                <div>
-                  <h4 className="font-bold text-gray-900">Corporate Identity & Contact</h4>
-                  <p className="text-[10px] font-medium text-gray-500">This data dynamically populates the /contact page and site footer.</p>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Support Email</label>
-                    <input name="contactEmail" defaultValue={settings?.contactEmail} className="w-full h-12 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" placeholder="support@domain.com" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Support Phone</label>
-                    <input name="contactPhone" defaultValue={settings?.contactPhone} className="w-full h-12 px-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium" placeholder="+8801..." />
-                  </div>
-                  <div className="space-y-1.5 md:col-span-2">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Office Address</label>
-                    <textarea name="contactAddress" defaultValue={settings?.contactAddress} className="w-full p-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium resize-none" rows={2} placeholder="Level 4, Innovation Tower..." />
-                  </div>
-                  <div className="space-y-1.5 md:col-span-2">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Business Hours</label>
-                    <textarea name="businessHours" defaultValue={settings?.businessHours} className="w-full p-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium resize-none" rows={3} placeholder="Monday - Friday: 9am - 8pm..." />
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Payment Methods Section ── */}
-              <div className="md:col-span-2 pt-10 border-t border-gray-100 mt-6 space-y-6">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-green-50 text-green-600">
-                    <CreditCard size={16} />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-sm">Payment Methods & Charges</h3>
-                    <p className="text-[10px] text-gray-500 font-medium tracking-tight">Set account numbers and toggle methods for checkout.</p>
-                  </div>
-                </div>
-
-                <div className="flex gap-2 mb-2">
-                  <button 
-                    type="button" 
-                    onClick={() => setPaymentMethods([...paymentMethods, { id: Date.now().toString(), name: "Custom", accountNumber: "", enabled: true }])}
-                    className="text-[10px] font-bold bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-1"
-                  >
-                    <Plus size={12} /> Add Custom Method
-                  </button>
-                  <button 
-                    type="button" 
-                    onClick={() => setPaymentMethods([
-                      { id: "1", name: "bKash", accountNumber: "", enabled: true },
-                      { id: "2", name: "Nagad", accountNumber: "", enabled: true },
-                      { id: "3", name: "Rocket", accountNumber: "", enabled: true },
-                    ])}
-                    className="text-[10px] font-bold bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-1"
-                  >
-                    <Check size={12} /> Initialize Default Methods
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {/* Delivery Charge */}
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 p-4 bg-gray-50 border border-gray-100 rounded-2xl">
-                    <div className="flex items-center gap-3 flex-1">
-                      <div className="w-8 h-8 bg-black rounded-xl flex items-center justify-center shrink-0">
-                        <Truck size={16} className="text-white" />
-                      </div>
-                      <div>
-                        <p className="font-bold text-xs text-gray-900">Delivery Charge</p>
-                        <p className="text-[9px] text-gray-500">Added to every order. Set 0 for free delivery.</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                       <span className="text-xs font-black text-gray-400 ml-2 sm:hidden">Amount:</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={deliveryCharge}
-                        onChange={(e) => setDeliveryCharge(Number(e.target.value))}
-                        className="flex-1 sm:w-32 h-10 px-4 rounded-xl bg-white border ring-1 ring-gray-200 focus:ring-2 focus:ring-black outline-none text-sm font-bold font-mono text-right"
-                        placeholder="0"
-                      />
-                    </div>
-                  </div>
-
-                  {paymentMethods.map((method) => (
-                    <div key={method.id} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 p-3 bg-white border border-gray-100 rounded-2xl shadow-sm">
-                      {/* Label + Input Row (Mobile & Desktop) */}
-                      <div className="flex items-center gap-2 flex-1">
-                        <div className={`w-20 shrink-0 px-2 py-2 rounded-xl text-[10px] font-black text-center border ${
-                          method.name === "bKash"  ? "bg-pink-50 border-pink-200 text-pink-700" :
-                          method.name === "Nagad"  ? "bg-orange-50 border-orange-200 text-orange-700" :
-                          "bg-purple-50 border-purple-200 text-purple-700"
-                        }`}>
-                          {method.name}
-                        </div>
-                        <input
-                          type="text"
-                          value={method.accountNumber}
-                          onChange={(e) => setPaymentMethods(prev =>
-                            prev.map(m => m.id === method.id ? { ...m, accountNumber: e.target.value } : m)
-                          )}
-                          placeholder={`${method.name} Number`}
-                          className="flex-1 h-10 px-4 rounded-xl bg-gray-50/50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium font-mono"
-                        />
-                      </div>
-
-                      {/* Toggle Button - Mobile Row 2 / Desktop End */}
-                      <button
-                        type="button"
-                        onClick={() => setPaymentMethods(prev =>
-                          prev.map(m => m.id === method.id ? { ...m, enabled: !m.enabled } : m)
-                        )}
-                        className={cn(
-                          "h-10 px-4 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2",
-                          method.enabled 
-                            ? "bg-green-50 text-green-600 border-green-200 hover:bg-green-100" 
-                            : "bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100",
-                          "w-full sm:w-auto"
-                        )}
-                      >
-                        {method.enabled ? <><ToggleRight size={16} /> Active</> : <><ToggleLeft size={16} /> Disabled</>}
-                      </button>
-                    </div>
-                  ))}
-
-                  {/* Cash on Delivery */}
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 bg-green-50 border border-green-100 rounded-2xl">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-green-100 rounded-xl flex items-center justify-center">
-                        <Banknote size={16} className="text-green-700" />
-                      </div>
-                      <div>
-                        <p className="font-bold text-xs text-gray-900">Cash on Delivery</p>
-                        <p className="text-[9px] text-gray-500">Allow customers to pay in cash upon arrival</p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setCodEnabled(prev => !prev)}
-                      className={`flex items-center justify-center gap-2 px-6 h-10 rounded-xl text-xs font-bold border transition-all ${
-                        codEnabled
-                          ? "bg-green-600 text-white border-green-600 shadow-md shadow-green-200"
-                          : "bg-white text-gray-400 border-gray-200"
-                      }`}
-                    >
-                      {codEnabled ? <><ToggleRight size={16} /> Enabled</> : <><ToggleLeft size={16} /> Disabled</>}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Header Settings */}
-        {activeTab === "header" && (
-          <NavigationEditor 
-            title="Main Menu Links" 
-            description="Manage top navigation bar items." 
-            icon={PanelTop} 
-            iconColor="bg-indigo-50 text-indigo-600"
-            items={navLinks} 
-            setItems={setNavLinks} 
-          />
-        )}
-
-        {/* Footer Settings */}
-        {activeTab === "footer" && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="bg-white rounded-[2rem] border border-gray-100 shadow-sm overflow-hidden min-h-[140px]">
-              <div className="p-6 space-y-1.5">
-                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Footer Short Description</label>
-                <textarea 
-                  name="shortDescription" 
-                  defaultValue={settings?.shortDescription} 
-                  className="w-full h-24 p-4 rounded-xl bg-gray-50 border-none ring-1 ring-gray-100 focus:ring-2 focus:ring-black outline-none transition-all text-sm font-medium resize-none" 
-                />
-              </div>
-            </div>
-
-            <NavigationEditor 
-              title="Footer Product Categories" 
-              description="Manage product category links in the footer." 
-              icon={PanelBottom} 
-              iconColor="bg-orange-50 text-orange-600"
-              items={footerProducts} 
-              setItems={setFooterProducts} 
-              predefinedItems={settings?.categories?.map((c: any) => ({
-                label: c.label,
-                href: `/shop?category=${encodeURIComponent(c.label)}`
-              }))}
-            />
-
-            <NavigationEditor 
-              title="Footer Company Links" 
-              description="Manage corporate links like About or Careers." 
-              icon={PanelBottom} 
-              iconColor="bg-teal-50 text-teal-600"
-              items={footerCompany} 
-              setItems={setFooterCompany} 
-              labelName="Company Name"
-              linkName="Company Link"
-              predefinedItems={[
-                { label: "About Us", href: "/about" },
-                { label: "Privacy Policy", href: "/privacy" },
-                { label: "Terms of Service", href: "/terms" },
-                { label: "Contact Us", href: "/contact" },
-              ]}
-            />
-          </div>
-        )}
-
-        {/* Social Settings */}
-        {activeTab === "social" && (
-          <SocialMediaEditor 
-            title="Social Media Integration" 
-            description="Add multiple dynamic social URLs." 
-            icon={Instagram} 
-            iconColor="bg-pink-50 text-pink-600"
-            items={socialLinks} 
-            setItems={setSocialLinks} 
-          />
-        )}
-
-        {/* Global Save Button - visible regardless of tab */}
-        <div className="flex justify-end pt-4 pb-20">
-          <button 
-            type="submit" 
-            disabled={isSaving}
-            className="h-12 px-8 rounded-xl bg-black text-white font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:hover:scale-100 shadow-xl shadow-black/10"
-          >
-            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
-            Save Settings
-          </button>
+    <form onSubmit={handleSave} className="w-full space-y-6 pb-12">
+      {/* Clean Underline Tabs + Save Button */}
+      <div className="flex items-center justify-between gap-4 border-b border-gray-200">
+        <div className="flex items-center gap-6 overflow-x-auto no-scrollbar">
+          {tabs.map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  "pb-3 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap cursor-pointer",
+                  isActive
+                    ? "border-black text-gray-950 font-semibold"
+                    : "border-transparent text-gray-500 hover:text-gray-800"
+                )}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
 
-      </form>
+        <button
+          type="submit"
+          disabled={isSaving}
+          className="mb-2 h-9 px-4 rounded-xl bg-black hover:bg-gray-900 text-white text-xs font-semibold inline-flex items-center gap-2 transition-all disabled:opacity-50 shrink-0 cursor-pointer"
+        >
+          {isSaving && <Loader2 size={13} className="animate-spin" />}
+          {isSaving ? "Saving…" : "Save Changes"}
+        </button>
+      </div>
+
+      {/* TAB 1: GENERAL */}
+      {activeTab === "general" && (
+        <div className="space-y-6">
+          {/* Section 1: Storefront */}
+          <div className="bg-white rounded-2xl border border-gray-200/80 divide-y divide-gray-100">
+            {/* Row 1: Store Name & Currency */}
+            <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-gray-700">Store Name</label>
+                <input
+                  type="text"
+                  value={storeName}
+                  onChange={(e) => setStoreName(e.target.value)}
+                  placeholder="Afra Tech Point"
+                  className={INPUT}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-gray-700">Currency</label>
+                <AdminSelect
+                  value={currencySymbol}
+                  onChange={setCurrencySymbol}
+                  options={CURRENCY_OPTIONS}
+                />
+              </div>
+            </div>
+
+            {/* Row 2: Store Logo */}
+            <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Store Logo</p>
+                <p className="text-xs text-gray-500">Displayed in the site header and invoices.</p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
+                  {logoUrl ? (
+                    <img
+                      src={logoUrl}
+                      alt="Logo"
+                      className="w-full h-full object-contain p-1.5"
+                    />
+                  ) : (
+                    <ImageIcon size={16} className="text-gray-400" />
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPickingFor("logo");
+                    setIsMediaPickerOpen(true);
+                  }}
+                  className="h-9 px-3.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-xs font-medium text-gray-900 transition-colors cursor-pointer"
+                >
+                  {logoUrl ? "Change" : "Upload"}
+                </button>
+
+                {logoUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImageToCrop(logoUrl);
+                      setIsCropperOpen(true);
+                    }}
+                    title="Crop Logo"
+                    className="h-9 px-3 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-xs font-medium text-gray-700 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {isCropping ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Scissors size={13} />
+                    )}
+                    Crop
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Row 3: Invoice Signature */}
+            <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Invoice Signature</p>
+                <p className="text-xs text-gray-500">Optional transparent PNG for order invoices.</p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="w-20 h-12 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
+                  {signatureUrl ? (
+                    <img
+                      src={signatureUrl}
+                      alt="Signature"
+                      className="w-full h-full object-contain p-1.5"
+                    />
+                  ) : (
+                    <span className="text-[11px] text-gray-400">None</span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPickingFor("signature");
+                    setIsMediaPickerOpen(true);
+                  }}
+                  className="h-9 px-3.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-xs font-medium text-gray-900 transition-colors cursor-pointer"
+                >
+                  {signatureUrl ? "Change" : "Select"}
+                </button>
+
+                {signatureUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setSignatureUrl("")}
+                    title="Remove Signature"
+                    className="w-9 h-9 rounded-xl border border-gray-200 bg-white hover:bg-red-50 hover:border-red-200 text-gray-400 hover:text-red-600 flex items-center justify-center transition-colors cursor-pointer"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Row 4: Announcement Bar */}
+            <div className="p-5 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Announcement Bar</p>
+                  <p className="text-xs text-gray-500">Top notice banner above the site header.</p>
+                </div>
+                <Switch
+                  checked={announcementActive}
+                  onChange={() => setAnnouncementActive((prev) => !prev)}
+                />
+              </div>
+
+              {announcementActive && (
+                <input
+                  type="text"
+                  value={announcementText}
+                  onChange={(e) => setAnnouncementText(e.target.value)}
+                  placeholder="e.g. Free delivery on orders over ৳2,000!"
+                  className={INPUT}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Section 2: Payments & Delivery */}
+          <div className="bg-white rounded-2xl border border-gray-200/80 divide-y divide-gray-100">
+            {/* Delivery Charge Row */}
+            <div className="px-5 py-4 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Delivery Charge</p>
+                <p className="text-xs text-gray-500">Shipping fee for physical orders (0 for free).</p>
+              </div>
+              <div className="relative w-32 shrink-0">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-400">
+                  {currencySymbol}
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={deliveryCharge}
+                  onChange={(e) => setDeliveryCharge(e.target.value)}
+                  className="w-full h-10 pl-8 pr-3.5 rounded-xl bg-white border border-gray-200 focus:border-black outline-none text-sm font-semibold text-right text-gray-900 tabular-nums"
+                />
+              </div>
+            </div>
+
+            {/* Cash on Delivery Row */}
+            <div className="px-5 py-4 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Cash on Delivery</p>
+                <p className="text-xs text-gray-500">Allow customers to pay cash upon parcel delivery.</p>
+              </div>
+              <Switch
+                checked={codEnabled}
+                onChange={() => setCodEnabled((prev) => !prev)}
+              />
+            </div>
+
+            {/* Mobile Banking Section */}
+            <div className="p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Mobile Banking</p>
+                  <p className="text-xs text-gray-500">Numbers shown to customers at checkout.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPaymentMethods((prev) => [
+                      ...prev,
+                      {
+                        id: Date.now().toString(),
+                        name: prev.length === 0 ? "bKash" : "Upay",
+                        accountNumber: "",
+                        enabled: true,
+                      },
+                    ])
+                  }
+                  className="h-8 px-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-medium text-gray-900 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus size={13} /> Add Number
+                </button>
+              </div>
+
+              {paymentMethods.length > 0 && (
+                <div className="pt-1 space-y-2.5">
+                  {paymentMethods.map((method) => {
+                    const isCore = CORE_PROVIDERS.includes(method.name);
+                    return (
+                      <div
+                        key={method.id}
+                        className="flex flex-col sm:flex-row sm:items-center gap-2.5"
+                      >
+                        {isCore ? (
+                          <span className="sm:w-28 h-10 px-3.5 rounded-xl bg-gray-100 text-xs font-semibold text-gray-900 inline-flex items-center shrink-0">
+                            {method.name}
+                          </span>
+                        ) : (
+                          <input
+                            type="text"
+                            value={method.name}
+                            onChange={(e) =>
+                              setPaymentMethods((prev) =>
+                                prev.map((m) =>
+                                  m.id === method.id ? { ...m, name: e.target.value } : m
+                                )
+                              )
+                            }
+                            placeholder="Provider"
+                            className="sm:w-28 h-10 px-3 rounded-xl bg-white border border-gray-200 focus:border-black outline-none text-xs font-semibold text-gray-900 shrink-0"
+                          />
+                        )}
+
+                        <input
+                          type="tel"
+                          value={method.accountNumber || ""}
+                          onChange={(e) =>
+                            setPaymentMethods((prev) =>
+                              prev.map((m) =>
+                                m.id === method.id
+                                  ? { ...m, accountNumber: e.target.value }
+                                  : m
+                              )
+                            )
+                          }
+                          placeholder={`01XXXXXXXXX`}
+                          className={cn(INPUT, "flex-1 font-mono")}
+                        />
+
+                        <div className="flex items-center justify-between sm:justify-end gap-3 pl-1">
+                          <Switch
+                            checked={method.enabled}
+                            onChange={() =>
+                              setPaymentMethods((prev) =>
+                                prev.map((m) =>
+                                  m.id === method.id ? { ...m, enabled: !m.enabled } : m
+                                )
+                              )
+                            }
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPaymentMethods((prev) =>
+                                prev.filter((m) => m.id !== method.id)
+                              )
+                            }
+                            title="Remove"
+                            className="w-9 h-9 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition-colors cursor-pointer"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: HEADER */}
+      {activeTab === "header" && (
+        <NavigationEditor
+          title="Header Menu"
+          items={navLinks}
+          setItems={setNavLinks}
+        />
+      )}
+
+      {/* TAB 3: FOOTER */}
+      {activeTab === "footer" && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-2xl border border-gray-200/80 p-5 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-semibold text-gray-950">Footer Description</label>
+              <span className="text-xs text-gray-400 tabular-nums">
+                {shortDescription.length}/240
+              </span>
+            </div>
+            <textarea
+              rows={3}
+              maxLength={240}
+              value={shortDescription}
+              onChange={(e) => setShortDescription(e.target.value)}
+              placeholder="Short store bio shown beneath the logo in the footer…"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-gray-200 hover:border-gray-300 focus:border-black focus:ring-2 focus:ring-black/5 outline-none transition-all text-sm text-gray-900 placeholder:text-gray-400 resize-y"
+            />
+          </div>
+
+          <NavigationEditor
+            title="Product Category Links"
+            items={footerProducts}
+            setItems={setFooterProducts}
+            predefinedItems={categories.map((c: any) => ({
+              label: c.label,
+              href: `/shop?category=${encodeURIComponent(c.label)}`,
+            }))}
+          />
+
+          <NavigationEditor
+            title="Company Links"
+            items={footerCompany}
+            setItems={setFooterCompany}
+            predefinedItems={[
+              { label: "About Us", href: "/about" },
+              { label: "Contact Us", href: "/contact" },
+              { label: "Privacy Policy", href: "/privacy" },
+              { label: "Terms of Service", href: "/terms" },
+            ]}
+          />
+        </div>
+      )}
+
+      {/* TAB 4: SOCIAL */}
+      {activeTab === "social" && (
+        <SocialMediaEditor items={socialLinks} setItems={setSocialLinks} />
+      )}
 
       {/* Media Library Picker Modal */}
       <MediaPickerModal
@@ -1001,6 +931,7 @@ export default function AdminSettings() {
         onSelect={(url) => {
           if (pickingFor === "logo") setLogoUrl(url);
           else if (pickingFor === "signature") setSignatureUrl(url);
+          setIsMediaPickerOpen(false);
           setPickingFor(null);
         }}
         currentUrl={pickingFor === "logo" ? logoUrl : signatureUrl}
@@ -1015,7 +946,6 @@ export default function AdminSettings() {
           onCropComplete={handleCropComplete}
         />
       )}
-    </div>
+    </form>
   );
 }
-

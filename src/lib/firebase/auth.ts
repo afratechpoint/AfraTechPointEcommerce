@@ -90,6 +90,12 @@ export function getFirebaseErrorMessage(code: string | undefined): string {
     "auth/user-disabled":            "This account has been disabled.",
     "auth/operation-not-allowed":    "This sign-in method is not enabled.",
     "auth/account-exists-with-different-credential": "An account already exists with this email via Google. Please sign in with Google or reset your password to add a manual login.",
+    // Password-reset / email-verification action-code errors
+    "auth/expired-action-code": "This link has expired. Please request a new one.",
+    "auth/invalid-action-code": "This link is invalid or has already been used. Please request a new one.",
+    "auth/unauthorized-domain": "This domain is not authorized for account recovery. Please open the site at afratechpoint.shop and try again, or contact support.",
+    "auth/missing-continue-uri": "The verification link is misconfigured. Please contact support.",
+    "auth/unauthorized-continue-uri": "The verification link is not authorized for this domain. Please contact support.",
   };
   
   if (messages[code]) return messages[code];

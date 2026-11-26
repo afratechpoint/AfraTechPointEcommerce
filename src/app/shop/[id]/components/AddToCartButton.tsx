@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useCart } from "@/lib/cart";
 import { addToCartAction } from "../actions";
 import { Variant } from "../types";
+import type { VirtualCustomField } from "@/types/product";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,12 @@ interface AddToCartButtonProps {
   hasVariants: boolean;
   quantity: number;
   currencySymbol?: string;
+  productKind?: "physical" | "virtual";
+  virtualType?: "social" | "account" | "license" | "software";
+  customFields?: VirtualCustomField[];
+  customFieldValues?: Record<string, string>;
+  isOutOfStock?: boolean;
+  maxStock?: number | null;
 }
 
 export default function AddToCartButton({
@@ -34,15 +41,42 @@ export default function AddToCartButton({
   hasVariants,
   quantity,
   currencySymbol = "৳",
+  productKind,
+  virtualType,
+  customFields = [],
+  customFieldValues = {},
+  isOutOfStock = false,
+  maxStock = null,
 }: AddToCartButtonProps) {
-  const { addItem } = useCart();
+  const { items, addItem } = useCart();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
 
   const handleAddToCart = async (isBuyNow = false) => {
+    if (isOutOfStock) {
+      toast.error("This product is Stock Out.");
+      return;
+    }
+
     // Guard: require variant selection when variants exist
     if (hasVariants && !selectedVariant) {
       toast.error("Please select a variant first!");
+      return;
+    }
+
+    if (maxStock !== null && maxStock !== undefined) {
+      const existingInCart =
+        items.find((i) => i.id === productId && i.variantName === selectedVariant?.name)
+          ?.quantity || 0;
+      if (existingInCart + quantity > maxStock) {
+        toast.error(`Only ${maxStock} available in stock.`);
+        return;
+      }
+    }
+
+    const missingField = customFields.find(f => !(customFieldValues[f.id] || "").trim());
+    if (missingField) {
+      toast.error(`Please fill ${missingField.label}`);
       return;
     }
 
@@ -55,6 +89,12 @@ export default function AddToCartButton({
       image: displayImage,
       variantName: selectedVariant?.name,
       quantity,
+      productKind: productKind || "physical",
+      virtualType,
+      customFieldAnswers: customFields.map(f => ({
+        label: f.label,
+        value: (customFieldValues[f.id] || "").trim(),
+      })),
     };
 
     // 1. Optimistic update — instant client-side cart
@@ -80,8 +120,22 @@ export default function AddToCartButton({
     await handleAddToCart(true);
   };
 
-  const isSelectionRequired = hasVariants && !selectedVariant;
-  const isDisabled = isLoading || isSelectionRequired;
+  const isSelectionRequired = !isOutOfStock && hasVariants && !selectedVariant;
+  const isDisabled = isLoading || isSelectionRequired || isOutOfStock;
+
+  if (isOutOfStock) {
+    return (
+      <div className="mt-2">
+        <button
+          type="button"
+          disabled
+          className="w-full h-11 rounded-xl bg-red-50 text-red-600 border border-red-200 font-black text-xs uppercase tracking-widest flex items-center justify-center cursor-not-allowed"
+        >
+          Stock Out
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">

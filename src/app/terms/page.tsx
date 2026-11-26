@@ -52,13 +52,10 @@ export default function TermsPage() {
 
   return (
     <div className="flex flex-col w-full min-h-screen bg-white">
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8">
-        <Navbar 
-          searchEnabled={false} 
-          
-        />
+      <Navbar searchEnabled={false} />
+      <div className="w-full max-w-[1800px] mx-auto flex flex-col relative px-4 sm:px-6 md:px-8 lg:px-12 flex-1">
 
-        <main className="py-20 max-w-4xl mx-auto">
+        <main className="py-16 md:py-20 w-full">
           {/* Header */}
           <section className="mb-20 text-center">
             <motion.div

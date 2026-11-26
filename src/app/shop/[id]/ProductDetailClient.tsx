@@ -17,6 +17,8 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useUI } from "@/lib/ui";
 import { useSettings } from "@/components/SettingsProvider";
+import PremiumLoader from "@/components/PremiumLoader";
+import { useRealtime } from "@/lib/realtime-client";
 
 // Co-located components
 import ProductImages from "./components/ProductImages";
@@ -26,13 +28,13 @@ import RelatedProducts from "./components/RelatedProducts";
 // Shared types
 import { Product, Variant } from "./types";
 
-export default function ProductDetailClient() {
+export default function ProductDetailClient({ initialProduct }: { initialProduct?: Product | null } = {}) {
   const params = useParams();
   const settings = useSettings();
 
   // ── Data state ────────────────────────────────────────────────
-  const [product, setProduct] = useState<Product | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [product, setProduct] = useState<Product | null>(initialProduct || null);
+  const [loading, setLoading] = useState(!initialProduct);
 
   // ── UI state shared across children ──────────────────────────
   const [quantity, setQuantity] = useState(1);
@@ -67,28 +69,41 @@ export default function ProductDetailClient() {
   // Reset manual image selection when variant changes
   useEffect(() => { setActiveImage(null); }, [selectedVariant]);
 
-  // ── Fetch product ─────────────────────────────────────────────
-  useEffect(() => {
+  // ── Fetch & live-sync product ─────────────────────────────────
+  const refreshProduct = React.useCallback(() => {
     if (!params.id) return;
-    fetch(`/api/products/${params.id}`)
+    fetch(`/api/products/${params.id}`, { cache: "no-store" })
       .then(res => {
         if (!res.ok) throw new Error("Not found");
         return res.json();
       })
       .then((data: Product) => {
         setProduct(data);
+        setSelectedVariant(prev => {
+          if (!prev || !Array.isArray(data.variants)) return prev;
+          return data.variants.find(v => v.id === prev.id || v.name === prev.name) || null;
+        });
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, [params.id]);
 
+  useEffect(() => {
+    if (initialProduct && initialProduct.id === params.id) {
+      setProduct(initialProduct);
+      setLoading(false);
+      // Also verify latest live version on mount in case SSR had cached data
+      refreshProduct();
+      return;
+    }
+    refreshProduct();
+  }, [params.id, initialProduct, refreshProduct]);
+
+  useRealtime("products", refreshProduct);
+
   // ── Loading state ──────────────────────────────────────────────
   if (loading) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="w-10 h-10 md:w-12 md:h-12 border-4 border-gray-100 border-t-black rounded-full animate-spin" />
-      </div>
-    );
+    return <PremiumLoader />;
   }
 
   // ── 404 state ─────────────────────────────────────────────────
@@ -113,8 +128,8 @@ export default function ProductDetailClient() {
 
   return (
     <div className="flex flex-col w-full min-h-screen bg-white">
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8">
-        <Navbar searchEnabled={false} />
+      <Navbar searchEnabled={false} />
+      <div className="w-full max-w-[1800px] mx-auto flex flex-col relative px-4 sm:px-6 md:px-8 lg:px-12 flex-1">
 
         <main className="py-2 md:py-6 lg:py-4">
           {/* Mobile back link */}

@@ -12,14 +12,10 @@ import { useUI } from "@/lib/ui";
 export default function AboutPage() {
     return (
     <div className="flex flex-col w-full min-h-screen bg-white">
+      <Navbar searchEnabled={false} />
       
       {/* Constraints for centered content */}
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8">
-        
-        <Navbar 
-          searchEnabled={false} 
-          
-        />
+      <div className="w-full max-w-[1800px] mx-auto flex flex-col relative px-4 sm:px-6 md:px-8 lg:px-12">
 
         {/* Hero Section */}
         <section className="mb-12 md:mb-24">

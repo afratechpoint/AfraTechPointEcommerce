@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Bell, Check, CheckCheck, ExternalLink, Package, UserPlus, Info } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { authenticatedFetch } from "@/lib/api-helper";
+import { useRealtime } from "@/lib/realtime-client";
 
 interface Notification {
   id: string;
@@ -38,7 +40,43 @@ export default function NotificationBell() {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [mounted, setMounted] = useState(false);
+  const [anchorStyle, setAnchorStyle] = useState<React.CSSProperties>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setMounted(true), []);
+
+  // Position the portalled popover just under the bell, clamped inside the viewport.
+  const placePanel = useCallback(() => {
+    const rect = dropdownRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(380, window.innerWidth - 24);
+    const top = rect.bottom + 8;
+    const right = Math.max(
+      12,
+      Math.min(window.innerWidth - rect.right, window.innerWidth - width - 12)
+    );
+    const maxHeight = Math.max(240, window.innerHeight - top - 12);
+    setAnchorStyle({
+      top: `${top}px`,
+      right: `${right}px`,
+      width: `${width}px`,
+      maxHeight: `${maxHeight}px`,
+    });
+  }, []);
+
+  const togglePanel = () => {
+    placePanel();
+    setIsOpen((prev) => !prev);
+  };
+
+  // Recalculate on rotate / resize while open
+  useEffect(() => {
+    if (!isOpen) return;
+    window.addEventListener("resize", placePanel);
+    return () => window.removeEventListener("resize", placePanel);
+  }, [isOpen, placePanel]);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -59,9 +97,13 @@ export default function NotificationBell() {
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 60000); // 1 minute poll
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") fetchNotifications();
+    }, 120000);
     return () => clearInterval(interval);
   }, [fetchNotifications]);
+
+  useRealtime(["notifications", "orders"], fetchNotifications);
 
   // Refresh when bell is opened
   useEffect(() => {
@@ -73,7 +115,10 @@ export default function NotificationBell() {
   // Click outside to close
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const inTrigger = dropdownRef.current?.contains(target);
+      const inPanel = panelRef.current?.contains(target);
+      if (!inTrigger && !inPanel) {
         setIsOpen(false);
       }
     };
@@ -167,7 +212,7 @@ export default function NotificationBell() {
     <div className="relative" ref={dropdownRef}>
       {/* Bell Trigger Button */}
       <button
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={togglePanel}
         aria-label={`Admin notifications (${unreadCount} unread)`}
         className="p-2.5 rounded-full hover:bg-gray-100 active:scale-95 transition-all relative flex items-center justify-center text-gray-700 hover:text-black"
       >
@@ -183,16 +228,19 @@ export default function NotificationBell() {
         )}
       </button>
 
-      {/* Dropdown Popover */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.96 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute right-0 mt-2 w-[calc(100vw-2rem)] sm:w-[380px] max-w-[380px] max-h-[calc(100dvh-5.5rem)] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden z-[100] flex flex-col"
-          >
+      {/* Dropdown Popover — portalled to body so it stays inside the viewport */}
+      {mounted && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              style={anchorStyle}
+              className="fixed bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden z-[200] flex flex-col"
+            >
             {/* Header */}
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
               <div className="flex items-center gap-2">
@@ -253,7 +301,7 @@ export default function NotificationBell() {
                           {timeAgo(n.createdAt)}
                         </span>
 
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                           {!n.isRead && (
                             <button
                               onClick={(e) => markAsRead(n.id, e)}
@@ -294,9 +342,11 @@ export default function NotificationBell() {
             >
               View all notifications →
             </Link>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }

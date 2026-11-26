@@ -1,6 +1,8 @@
 // ── Admin Panel: Shared TypeScript Types ──────────────────────────
 // Single source of truth for product-related types in the admin panel.
 
+import type { ProductKind, VirtualType, VirtualConfig } from "@/types/product";
+
 export interface Variant {
   id: string;
   name: string;
@@ -9,6 +11,8 @@ export interface Variant {
   image?: string;
   /** If true, this variant inherits the main product price */
   useMainPrice?: boolean;
+  /** Optional per-variant stock managed in /admin/inventory */
+  stock?: number | null;
 }
 
 export interface Specification {
@@ -39,9 +43,16 @@ export interface Product {
   /** Product variants (colours, storage sizes, models…) */
   variants?: Variant[];
   /** Total stock available */
-  stock?: number;
+  stock?: number | null;
   /** Rating out of 5 */
   rating?: number;
   /** SEO & related product tags */
   tags?: string[];
+
+  /** physical (default for legacy products) or virtual */
+  productKind?: ProductKind;
+  /** Set when productKind === "virtual" */
+  virtualType?: VirtualType;
+  /** Type-specific virtual product configuration */
+  virtualConfig?: VirtualConfig;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
-import { LayoutDashboard, ShoppingCart, Package, Users, ArrowLeft, Settings, Store, Image, ShieldAlert, Menu, X, Bell } from "lucide-react";
+import { LayoutDashboard, ShoppingCart, Package, Users, ArrowLeft, Settings, Store, Image, ShieldAlert, Menu, X, Bell, Zap, Boxes } from "lucide-react";
 import AdminHeader from "./AdminHeader";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -10,8 +10,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import PremiumLoader from "@/components/PremiumLoader";
 import PushNotificationManager from "@/components/PushNotificationManager";
+import AdminSpellChecker from "./AdminSpellChecker";
 import { subscribeToAllOrders } from "@/lib/firebase/firestore";
 import { authenticatedFetch } from "@/lib/api-helper";
+import { useRealtime } from "@/lib/realtime-client";
 
 export default function AdminClientLayout({
   children,
@@ -21,11 +23,16 @@ export default function AdminClientLayout({
   const pathname = usePathname();
   const router   = useRouter();
   const { user, loading, isAdmin, isShopManager, isOrderManager } = useAuth();
+  const [mounted, setMounted] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
   const [unreadNotifsCount, setUnreadNotifsCount] = useState(0);
   const prevCountRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Still keep some theme-sync for when staying on client
   useEffect(() => {
@@ -60,7 +67,11 @@ export default function AdminClientLayout({
     }
     
     if (!isAdmin && !isShopManager) {
-      if (pathname.startsWith("/admin/products")) {
+      if (
+        pathname.startsWith("/admin/products") ||
+        pathname.startsWith("/admin/virtual-products") ||
+        pathname.startsWith("/admin/inventory")
+      ) {
         router.push("/admin");
       }
     }
@@ -71,8 +82,20 @@ export default function AdminClientLayout({
   useEffect(() => {
     if (!hasAccess || loading) return;
 
-    audioRef.current = new Audio("/sounds/notification.mp3");
-    const bc = new BroadcastChannel("admin_order_updates");
+    try {
+      audioRef.current = typeof Audio !== "undefined" ? new Audio("/sounds/notification.mp3") : null;
+    } catch {
+      audioRef.current = null;
+    }
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== "undefined") {
+        bc = new BroadcastChannel("admin_order_updates");
+      }
+    } catch {
+      bc = null;
+    }
 
     const playNotification = () => {
       if (audioRef.current) {
@@ -82,56 +105,68 @@ export default function AdminClientLayout({
     };
 
     const unsubscribe = subscribeToAllOrders((orders: any[]) => {
-      const newCount = orders.length;
-      if (newCount > prevCountRef.current && prevCountRef.current > 0) {
+      const activeCount = orders.filter((o: any) => {
+        const p = (o.paymentStatus ?? "pending").toLowerCase();
+        const s = (o.orderStatus ?? o.status ?? "pending").toLowerCase();
+        if (p === "refunded" || p === "cancelled" || p === "failed") return false;
+        if (s === "delivered" || s === "completed" || s === "cancelled") return false;
+        return true;
+      }).length;
+      if (activeCount > prevCountRef.current && prevCountRef.current > 0) {
         playNotification();
-        bc.postMessage({ type: "UPDATE_ORDER_COUNT", count: newCount });
+        try {
+          bc?.postMessage({ type: "UPDATE_ORDER_COUNT", count: activeCount });
+        } catch {}
       }
-      setNewOrdersCount(newCount);
-      prevCountRef.current = newCount;
+      setNewOrdersCount(activeCount);
+      prevCountRef.current = activeCount;
     });
 
-    bc.onmessage = (event) => {
-      if (event.data?.type === "UPDATE_ORDER_COUNT") {
-        const newCount = event.data.count;
-        if (newCount > prevCountRef.current) {
-          playNotification();
+    if (bc) {
+      bc.onmessage = (event) => {
+        if (event.data?.type === "UPDATE_ORDER_COUNT") {
+          const newCount = event.data.count;
+          if (newCount > prevCountRef.current) {
+            playNotification();
+          }
+          setNewOrdersCount(newCount);
+          prevCountRef.current = newCount;
         }
-        setNewOrdersCount(newCount);
-        prevCountRef.current = newCount;
-      }
-    };
+      };
+    }
 
     return () => {
       unsubscribe();
-      bc.close();
+      try {
+        bc?.close();
+      } catch {}
     };
+  }, [hasAccess, loading]);
+
+  const fetchNotifsCount = React.useCallback(async () => {
+    if (!hasAccess || loading) return;
+    try {
+      const res = await authenticatedFetch("/api/notifications?recipient=admin&limit=20", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.notifications && Array.isArray(data.notifications)) {
+          const unread = data.notifications.filter((n: any) => !n.isRead).length;
+          setUnreadNotifsCount(unread);
+        }
+      }
+    } catch {}
   }, [hasAccess, loading]);
 
   // Fetch unread notifications count for sidebar badge
   useEffect(() => {
     if (!hasAccess || loading) return;
-
-    const fetchNotifsCount = async () => {
-      try {
-        const res = await authenticatedFetch("/api/notifications?recipient=admin&limit=20");
-        if (res.ok) {
-          const data = await res.json();
-          if (data.notifications && Array.isArray(data.notifications)) {
-            const unread = data.notifications.filter((n: any) => !n.isRead).length;
-            setUnreadNotifsCount(unread);
-          }
-        }
-      } catch {}
-    };
-
     fetchNotifsCount();
-    const interval = setInterval(fetchNotifsCount, 30000);
-    return () => clearInterval(interval);
-  }, [hasAccess, loading, pathname]);
+  }, [hasAccess, loading, pathname, fetchNotifsCount]);
 
-  // Show premium loader while auth state resolves
-  if (loading) {
+  useRealtime(["notifications", "orders"], fetchNotifsCount);
+
+  // Show premium loader until client has mounted & auth state resolves
+  if (!mounted || loading) {
     return <PremiumLoader />;
   }
 
@@ -154,6 +189,8 @@ export default function AdminClientLayout({
     { label: "Dashboard", href: "/admin", icon: LayoutDashboard, roles: ["admin", "shop_manager", "order_manager"] },
     { label: "Orders", href: "/admin/orders", icon: ShoppingCart, roles: ["admin", "shop_manager", "order_manager"] },
     { label: "Products", href: "/admin/products", icon: Package, roles: ["admin", "shop_manager"] },
+    { label: "Virtual Products", href: "/admin/virtual-products", icon: Zap, roles: ["admin", "shop_manager"] },
+    { label: "Inventory", href: "/admin/inventory", icon: Boxes, roles: ["admin", "shop_manager"] },
     { label: "Customers", href: "/admin/customers", icon: Users, roles: ["admin"] },
     { label: "Notifications", href: "/admin/notifications", icon: Bell, roles: ["admin", "shop_manager", "order_manager"] },
     { label: "Media Library", href: "/admin/media", icon: Image, roles: ["admin"] },
@@ -164,7 +201,7 @@ export default function AdminClientLayout({
   const navItems = allNavItems.filter(item => item.roles.includes(currentRole));
 
   return (
-    <div className="flex flex-col w-full h-[100dvh] bg-gray-50/30 overflow-hidden relative">
+    <div className="flex flex-col w-full min-h-[100dvh] lg:h-[100dvh] bg-gray-50/30 lg:overflow-hidden relative">
       {/* Full-width header */}
       <AdminHeader isOpen={isOpen} setIsOpen={setIsOpen} />
 
@@ -182,7 +219,7 @@ export default function AdminClientLayout({
       </AnimatePresence>
 
       {/* Sidebar + Content Row */}
-      <div className="flex flex-1 overflow-hidden relative w-full min-w-0">
+      <div className="flex flex-1 lg:overflow-hidden relative w-full min-w-0">
         {/* Sidebar */}
         <aside className={cn(
           "fixed inset-y-0 left-0 w-64 bg-white border-r border-gray-100 flex flex-col p-5 shadow-2xl z-[50] transition-transform duration-300 ease-in-out lg:shadow-sm lg:relative lg:w-56 lg:translate-x-0 lg:transition-none lg:mt-0 shrink-0",
@@ -196,7 +233,7 @@ export default function AdminClientLayout({
             </div>
           </div>
 
-          <nav className="flex flex-col gap-1.5 flex-1 overflow-y-auto">
+          <nav className="flex flex-col gap-1.5 flex-1 overflow-y-auto overflow-x-hidden no-scrollbar">
             {navItems.map((item) => {
               const isActive = pathname === item.href;
               return (
@@ -207,7 +244,7 @@ export default function AdminClientLayout({
                   className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all duration-200",
                     isActive 
-                      ? "bg-black text-white shadow-md shadow-black/10 scale-[1.01]" 
+                      ? "bg-black text-white shadow-md shadow-black/10" 
                       : "text-gray-500 hover:text-black hover:bg-gray-50"
                   )}
                 >
@@ -246,8 +283,8 @@ export default function AdminClientLayout({
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden overscroll-y-none p-3 sm:p-5 md:p-6 lg:p-8 w-full min-w-0 bg-white lg:bg-transparent">
-          <div className="max-w-7xl mx-auto w-full min-w-0">
+        <main className="flex-1 lg:overflow-y-auto overflow-x-clip p-3 sm:p-5 md:p-6 lg:p-8 w-full min-w-0 bg-white lg:bg-transparent">
+          <div className="w-full min-w-0">
             <motion.div
               key={pathname}
               initial={{ opacity: 0, y: 10 }}
@@ -261,6 +298,7 @@ export default function AdminClientLayout({
         </main>
       </div>
       <PushNotificationManager />
+      <AdminSpellChecker />
     </div>
   );
 }

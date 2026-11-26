@@ -32,6 +32,13 @@ const firebaseConfig = {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 
+function toSafeDate(val: any): Date {
+  if (!val) return new Date();
+  if (typeof val?.toDate === "function") return val.toDate();
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+
 // ── Create a new order ────────────────────────────────────────────────────
 export async function createOrderInFirestore(
   orderData: Omit<Order, "id" | "createdAt" | "updatedAt">
@@ -55,8 +62,8 @@ export async function getOrderById(orderId: string): Promise<Order | null> {
     id: docSnap.id,
     ...data,
     // Convert Firestore Timestamps to JS Dates
-    createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
-    updatedAt: (data.updatedAt as Timestamp)?.toDate() ?? new Date(),
+    createdAt: toSafeDate(data.createdAt),
+    updatedAt: toSafeDate(data.updatedAt),
   } as Order;
 }
 
@@ -73,8 +80,8 @@ export async function getOrdersByUser(userId: string): Promise<Order[]> {
     return {
       id: d.id,
       ...data,
-      createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
-      updatedAt: (data.updatedAt as Timestamp)?.toDate() ?? new Date(),
+      createdAt: toSafeDate(data.createdAt),
+      updatedAt: toSafeDate(data.updatedAt),
     } as Order;
   });
 }
@@ -91,8 +98,8 @@ export async function getAllOrders(): Promise<Order[]> {
     return {
       id: d.id,
       ...data,
-      createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
-      updatedAt: (data.updatedAt as Timestamp)?.toDate() ?? new Date(),
+      createdAt: toSafeDate(data.createdAt),
+      updatedAt: toSafeDate(data.updatedAt),
     } as Order;
   });
 }
@@ -110,8 +117,8 @@ export function subscribeToAllOrders(callback: (orders: Order[]) => void) {
       return {
         id: d.id,
         ...data,
-        createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
-        updatedAt: (data.updatedAt as Timestamp)?.toDate() ?? new Date(),
+        createdAt: toSafeDate(data.createdAt),
+        updatedAt: toSafeDate(data.updatedAt),
       } as Order;
     });
     callback(orders);

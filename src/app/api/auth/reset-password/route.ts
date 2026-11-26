@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase/admin";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { PasswordResetEmail } from "@/emails/renderers/index";
+import { buildAppUrl } from "@/lib/app-url";
 
 export async function POST(req: Request) {
   try {
@@ -25,10 +26,15 @@ export async function POST(req: Request) {
       const url = new URL(firebaseLink);
       const oobCode = url.searchParams.get("oobCode");
 
-      // 3. Construct our own branded URL on our website
-      // Use the shop URL from env or fallback to localhost
-      const shopUrl = process.env.NEXT_PUBLIC_SHOP_URL || "http://localhost:3000";
-      const resetLink = `${shopUrl}/reset-password?oobCode=${oobCode}`;
+      // 3. Build our own branded URL on the canonical public domain.
+      // getAppUrl() never emits localhost from a deployed app, so the link
+      // in the email always points to the live site.
+      if (!oobCode) {
+        throw new Error("Firebase did not return a password reset code.");
+      }
+      const resetLink = buildAppUrl(
+        `/reset-password?oobCode=${encodeURIComponent(oobCode)}`
+      );
 
       // Send the email using our verified Gmail SMTP
       const result = await sendEmail({

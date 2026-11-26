@@ -22,11 +22,18 @@ export async function readData(filePath: string, defaultVal: any = []) {
 }
 
 export async function writeData(filePath: string, data: any) {
-  const dir = path.dirname(filePath);
   try {
-    await fs.access(dir);
-  } catch {
-    await fs.mkdir(dir, { recursive: true });
+    const dir = path.dirname(filePath);
+    try {
+      await fs.access(dir);
+    } catch {
+      await fs.mkdir(dir, { recursive: true });
+    }
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+  } catch (error: any) {
+    // Vercel's serverless filesystem is read-only. Firestore is the source of truth in production,
+    // so a failed local-JSON mirror write must never crash the request.
+    console.error(`[DB Error] Failed to write ${filePath}:`, error.message);
+    if (!process.env.VERCEL) throw error;
   }
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2));
 }

@@ -39,7 +39,7 @@ export default function Footer() {
 
   return (
     <footer className="w-full bg-gray-50 border-t border-gray-100 mt-20 pb-24 md:pb-0">
-      <div className="max-w-[1440px] mx-auto px-6 md:px-12">
+      <div className="w-full max-w-[1800px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12">
 
         {/* ── Trust bar ───────────────────────────────────────────── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 py-10 border-b border-gray-100">
@@ -90,7 +90,7 @@ export default function Footer() {
           </div>
 
           {/* Links */}
-          <div className="md:col-span-7 grid grid-cols-2 gap-10">
+          <div className="md:col-span-7 grid grid-cols-2 gap-6 sm:gap-10">
             <div>
               <h4 className="text-gray-900 text-xs font-black uppercase tracking-[0.2em] mb-5">Categories</h4>
               <ul className="space-y-3">
@@ -123,7 +123,7 @@ export default function Footer() {
           <p className="text-gray-500 text-xs">
             © {new Date().getFullYear()} {settings.storeName}. All rights reserved.
           </p>
-          <div className="flex gap-6">
+          <div className="flex flex-wrap justify-center gap-4 sm:gap-6">
             {["Privacy Policy", "Terms of Service", "Cookies"].map((item) => (
               <Link key={item} href="#" className="text-gray-500 hover:text-black text-xs transition-colors">
                 {item}

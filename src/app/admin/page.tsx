@@ -8,7 +8,8 @@ import { useSettings } from "@/components/SettingsProvider";
 import { authenticatedFetch } from "@/lib/api-helper";
 import { useAuth } from "@/contexts/AuthContext";
 
-import { subscribeToAllOrders, getProductsFromFirestore } from "@/lib/firebase/firestore";
+import { subscribeToAllOrders } from "@/lib/firebase/firestore";
+import { useRealtime } from "@/lib/realtime-client";
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState({ orders: 0, products: 0, customers: 0, completedOrders: 0, traffic: 0 });
@@ -17,13 +18,20 @@ export default function AdminDashboard() {
 
   const { user } = useAuth();
 
-  useEffect(() => {
-    // 1. Initial product fetch (static)
-    getProductsFromFirestore()
-      .then((products) => setStats(prev => ({ ...prev, products: products.length })))
+  const loadProductCount = React.useCallback(() => {
+    fetch("/api/products", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((products) => {
+        if (Array.isArray(products)) {
+          setStats((prev) => ({ ...prev, products: products.length }));
+        }
+      })
       .catch(console.error);
+  }, []);
 
-    // 2. "Light-speed" real-time orders subscription
+  useEffect(() => {
+    loadProductCount();
+
     const unsubscribe = subscribeToAllOrders((orders) => {
       const completed = orders.filter((o: any) => o.status?.toLowerCase() === "delivered" || o.orderStatus?.toLowerCase() === "delivered").length;
       
@@ -36,7 +44,9 @@ export default function AdminDashboard() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [loadProductCount]);
+
+  useRealtime("products", loadProductCount);
 
   // Fetch customer count strictly after user auth is ready
   useEffect(() => {

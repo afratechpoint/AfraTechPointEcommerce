@@ -1,8 +1,9 @@
 "use client";
 
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 
 import { THEMES, ThemeId } from "@/lib/themes";
+import { useRealtime } from "@/lib/realtime-client";
 
 export interface LinkItem {
   id: string;
@@ -72,8 +73,34 @@ export default function SettingsProvider({
   children: React.ReactNode;
   initialSettings: Settings;
 }) {
+  const [settings, setSettings] = useState<Settings>(initialSettings);
+
+  // The root layout is synchronous to avoid SSR suspense/hydration mismatches.
+  // Load the real store settings on the client after mount.
+  const loadSettings = useCallback(() => {
+    fetch("/api/settings", { cache: "no-store" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data || Array.isArray(data) || Object.keys(data).length === 0) return;
+        setSettings(prev => ({ ...prev, ...data, themeId: "midnight" }));
+        const theme = THEMES.midnight;
+        const root = document.documentElement;
+        root.style.setProperty("--primary", theme.primary);
+        root.style.setProperty("--primary-hover", theme.hover);
+        root.style.setProperty("--primary-text", theme.text);
+        root.style.setProperty("--primary-accent", theme.accent);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  useRealtime("settings", loadSettings);
+
   return (
-    <SettingsContext.Provider value={initialSettings}>
+    <SettingsContext.Provider value={settings}>
       {children}
     </SettingsContext.Provider>
   );

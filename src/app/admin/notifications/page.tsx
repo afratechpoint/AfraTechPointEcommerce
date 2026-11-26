@@ -6,6 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { authenticatedFetch } from "@/lib/api-helper";
+import { useRealtime } from "@/lib/realtime-client";
 
 interface Notification {
   id: string;
@@ -54,8 +55,8 @@ export default function NotificationsPage() {
   const [deletingId, setDeletingId]       = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  const fetchNotifs = async () => {
-    setLoading(true);
+  const fetchNotifs = React.useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const res = await authenticatedFetch("/api/notifications?recipient=admin&limit=50", { cache: "no-store" });
       const data = await res.json();
@@ -63,9 +64,11 @@ export default function NotificationsPage() {
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
+
+  useRealtime(["notifications", "orders"], () => fetchNotifs(true));
 
   useEffect(() => { fetchNotifs(); }, []);
 
@@ -111,7 +114,7 @@ export default function NotificationsPage() {
   const unreadCount = notifications.filter(n => !n.isRead).length;
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
+    <div className="space-y-6 w-full">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -126,7 +129,7 @@ export default function NotificationsPage() {
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={fetchNotifs}
+            onClick={() => fetchNotifs(false)}
             disabled={loading}
             className="p-2 rounded-xl border border-gray-200 bg-white text-gray-500 hover:text-black hover:border-black transition-all disabled:opacity-40"
             title="Refresh"

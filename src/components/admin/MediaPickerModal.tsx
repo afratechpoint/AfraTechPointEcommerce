@@ -6,6 +6,7 @@ import { X, Check, Loader2, ImageIcon, Upload, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { authenticatedFetch } from "@/lib/api-helper";
+import { prepareImageFile } from "@/lib/image-prep";
 
 interface MediaFile {
   name: string;
@@ -76,20 +77,39 @@ export default function MediaPickerModal({
   const handleUpload = async (fileList: FileList) => {
     if (fileList.length === 0) return;
     setIsUploading(true);
-    const formData = new FormData();
-    Array.from(fileList).forEach((f) => formData.append("files", f));
     try {
-      const res = await authenticatedFetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (data.success) {
-        toast.success("Uploaded!");
-        await fetchFiles();
-        if (data.files?.length > 0) {
-          setSelected(data.files[data.files.length - 1].url);
+      const prepared: File[] = [];
+      for (const file of Array.from(fileList)) {
+        try {
+          prepared.push(await prepareImageFile(file));
+        } catch (e: any) {
+          toast.error(e?.message || `Could not prepare "${file.name}".`);
         }
       }
-    } catch {
-      toast.error("Upload failed.");
+      if (prepared.length === 0) return;
+
+      const formData = new FormData();
+      prepared.forEach((f) => formData.append("files", f));
+
+      const res = await authenticatedFetch("/api/upload", { method: "POST", body: formData });
+      const data = await res.json();
+
+      if (data.files?.length) {
+        toast.success(`${data.files.length} file(s) uploaded!`);
+        await fetchFiles();
+        setSelected(data.files[data.files.length - 1].url);
+      }
+      if (data.failed?.length) {
+        toast.error(
+          `${data.failed.length} failed — ${data.failed[0].name}: ${data.failed[0].error}`,
+          { duration: 8000 }
+        );
+      }
+      if (!data.files?.length && !data.failed?.length) {
+        toast.error(data.error || "Upload failed.");
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Upload failed.");
     } finally {
       setIsUploading(false);
     }
@@ -274,8 +294,8 @@ export default function MediaPickerModal({
             <div className="p-5 border-t border-gray-100 bg-gray-50/50 shrink-0 flex items-center justify-between gap-4">
               <div className="text-xs text-gray-500 font-medium">
                 {selectedCount > 0 ? (
-                  <span className="text-black font-bold">
-                    ✓ {selectedCount} image{selectedCount > 1 ? "s" : ""} selected
+                  <span className="text-black font-bold inline-flex items-center gap-1">
+                    <Check size={13} strokeWidth={2.5} /> {selectedCount} image{selectedCount > 1 ? "s" : ""} selected
                     {multiSelect && selectedCount < 2 && (
                       <span className="text-gray-400 font-normal ml-2">Ctrl+Click to select more</span>
                     )}

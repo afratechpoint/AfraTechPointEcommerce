@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   Bell,
   Check,
@@ -16,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { useRealtime } from "@/lib/realtime-client";
 
 interface Notification {
   id: string;
@@ -50,25 +52,44 @@ export default function ShopNotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [anchorStyle, setAnchorStyle] = useState<React.CSSProperties>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const prevUnreadRef = useRef<number>(0);
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  // Initialize sound element
+  // Portal target is only available on the client
+  useEffect(() => setMounted(true), []);
+
+  // Position the portalled popover just under the bell, clamped inside the viewport.
+  const placePanel = useCallback(() => {
+    const rect = dropdownRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(380, window.innerWidth - 24);
+    const top = rect.bottom + 8;
+    const right = Math.max(
+      12,
+      Math.min(window.innerWidth - rect.right, window.innerWidth - width - 12)
+    );
+    const maxHeight = Math.max(240, window.innerHeight - top - 12);
+    setAnchorStyle({
+      top: `${top}px`,
+      right: `${right}px`,
+      width: `${width}px`,
+      maxHeight: `${maxHeight}px`,
+    });
+  }, []);
+
+  const togglePanel = () => {
+    placePanel();
+    setIsOpen((prev) => !prev);
+  };
+
+  // Recalculate on rotate / resize while open
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      audioRef.current = new Audio("/sounds/notification.mp3");
-    }
-  }, []);
-
-  const playChime = useCallback(() => {
-    try {
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        audioRef.current.play().catch(() => {});
-      }
-    } catch {}
-  }, []);
+    if (!isOpen) return;
+    window.addEventListener("resize", placePanel);
+    return () => window.removeEventListener("resize", placePanel);
+  }, [isOpen, placePanel]);
 
   const getAuthToken = async () => {
     if (!user) return null;
@@ -98,18 +119,12 @@ export default function ShopNotificationBell() {
       if (data.notifications && Array.isArray(data.notifications)) {
         setNotifications(data.notifications);
         const count = data.notifications.filter((n: Notification) => !n.isRead).length;
-        
-        // Play sound if new unread notification arrived
-        if (count > prevUnreadRef.current && prevUnreadRef.current >= 0) {
-          playChime();
-        }
-        prevUnreadRef.current = count;
         setUnreadCount(count);
       }
     } catch (err) {
       console.error("Failed to fetch notifications:", err);
     }
-  }, [user, playChime]);
+  }, [user]);
 
   // Initial fetch and poll every 25 seconds
   useEffect(() => {
@@ -120,9 +135,13 @@ export default function ShopNotificationBell() {
     }
 
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 25000);
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") fetchNotifications();
+    }, 120000);
     return () => clearInterval(interval);
   }, [user, fetchNotifications]);
+
+  useRealtime(["notifications", "orders"], fetchNotifications);
 
   // Refetch whenever opened
   useEffect(() => {
@@ -134,7 +153,10 @@ export default function ShopNotificationBell() {
   // Click outside and Escape key listener
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const inTrigger = dropdownRef.current?.contains(target);
+      const inPanel = panelRef.current?.contains(target);
+      if (!inTrigger && !inPanel) {
         setIsOpen(false);
       }
     };
@@ -159,7 +181,6 @@ export default function ShopNotificationBell() {
     // Optimistic UI update
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
     setUnreadCount(0);
-    prevUnreadRef.current = 0;
 
     try {
       const token = await getAuthToken();
@@ -187,7 +208,6 @@ export default function ShopNotificationBell() {
       prev.map((n) => (n.id === id ? { ...n, isRead: true } : n))
     );
     setUnreadCount((prev) => Math.max(0, prev - 1));
-    prevUnreadRef.current = Math.max(0, prevUnreadRef.current - 1);
 
     try {
       const token = await getAuthToken();
@@ -212,7 +232,6 @@ export default function ShopNotificationBell() {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
     if (target && !target.isRead) {
       setUnreadCount((prev) => Math.max(0, prev - 1));
-      prevUnreadRef.current = Math.max(0, prevUnreadRef.current - 1);
     }
 
     try {
@@ -274,7 +293,7 @@ export default function ShopNotificationBell() {
     <div className="relative" ref={dropdownRef}>
       {/* Bell Trigger Button */}
       <button
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={togglePanel}
         aria-label={`Notifications (${unreadCount} unread)`}
         className="p-2.5 rounded-full bg-white shadow-sm border border-gray-100 hover:bg-gray-50 active:scale-95 transition-all relative group flex items-center justify-center"
       >
@@ -290,16 +309,20 @@ export default function ShopNotificationBell() {
         )}
       </button>
 
-      {/* Dropdown Popover */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.96 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute right-0 mt-2 w-[calc(100vw-2rem)] sm:w-[380px] max-w-[380px] max-h-[calc(100dvh-5.5rem)] bg-white border border-gray-100 rounded-2xl shadow-2xl z-[120] overflow-hidden flex flex-col"
-          >
+      {/* Dropdown Popover — portalled to body so it can never be clipped by
+          the sticky/backdrop-blurred navbar on small screens. */}
+      {mounted && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              style={anchorStyle}
+              className="fixed bg-white border border-gray-100 rounded-2xl shadow-2xl z-[200] overflow-hidden flex flex-col"
+            >
             {/* Header */}
             <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-white/80 backdrop-blur-sm shrink-0">
               <div className="flex items-center gap-2">
@@ -360,7 +383,7 @@ export default function ShopNotificationBell() {
                           {timeAgo(n.createdAt)}
                         </span>
 
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                           {!n.isRead && (
                             <button
                               onClick={(e) => markAsRead(n.id, e)}
@@ -417,9 +440,11 @@ export default function ShopNotificationBell() {
                 View All Alerts →
               </Link>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }

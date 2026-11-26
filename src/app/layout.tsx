@@ -4,11 +4,11 @@ import type { Metadata, Viewport } from "next";
 
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { storage } from "@/lib/storage";
 import ClientLayout from "@/components/ClientLayout";
 import SettingsProvider from "@/components/SettingsProvider";
 import { THEMES, ThemeId } from "@/lib/themes";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { getAppUrl } from "@/lib/app-url";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -19,7 +19,7 @@ const inter = Inter({ subsets: ["latin"], display: "swap" });
 
 const defaultSettings = {
   storeName: "Afra Tech Point",
-  logoUrl: "https://afratechpoint.shop/email-logo.png",
+  logoUrl: "/logo.png",
   contactEmail: "afratechpoint@gmail.com",
   contactPhone: "+880 1974-722102",
   contactAddress: "Dhaka, Bangladesh",
@@ -43,38 +43,12 @@ const defaultSettings = {
   deliveryCharge: 0
 };
 
-import { headers } from "next/headers";
+export function generateMetadata(): Metadata {
+  // Synchronous on purpose: an async root metadata function makes Next stream
+  // a Suspense boundary into the HTML, which breaks hydration matching.
+  const settings: any = defaultSettings;
 
-export async function generateMetadata(): Promise<Metadata> {
-  let settings: any = defaultSettings;
-  try {
-    const fetchedSettings = await storage.getSettings();
-    if (fetchedSettings && !Array.isArray(fetchedSettings)) {
-      settings = fetchedSettings;
-    }
-  } catch (e) {
-    console.warn("[Layout Metadata] Failed to fetch settings, using defaults.");
-  }
-
-  // Safe host detection for admin subdomain
-  let isAdminSubdomain = false;
-  try {
-    const headersList = await headers();
-    const host = headersList.get('host') || "";
-    isAdminSubdomain = host.startsWith('admin.');
-  } catch (e) {
-    // Silent fail for non-browser/build contexts
-  }
-
-  if (isAdminSubdomain) {
-    return {
-      title: "Admin Panel | " + settings.storeName,
-      description: "Manage your store.",
-      manifest: "/api/manifest/admin",
-    };
-  }
-
-  const shopUrl = process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop";
+  const shopUrl = getAppUrl();
   const logoImage = settings.logoUrl || `${shopUrl}/logo.png`;
   // Use a clean, cacheable version of the logo for OG (no ImageKit transforms that might be blocked)
   const ogImage = logoImage.startsWith("http") ? logoImage : `${shopUrl}${logoImage}`;
@@ -153,27 +127,23 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  let settings: any = defaultSettings;
-  
-  try {
-    const fetchedSettings = await storage.getSettings();
-    if (fetchedSettings && !Array.isArray(fetchedSettings) && Object.keys(fetchedSettings).length > 0) {
-      settings = fetchedSettings;
-    }
-  } catch (e) {
-    console.error("[RootLayout] Critical settings fetch error, falling back to static defaults.");
-  }
+  // Keep the root layout synchronous. Awaiting Firestore here made the whole
+  // tree suspend during SSR, which produced a streamed Suspense boundary in
+  // the HTML that didn't match the client tree -> hydration mismatch.
+  // Live settings are loaded by SettingsProvider on the client instead.
+  const settings: any = defaultSettings;
 
   const themeId = (settings.themeId as ThemeId) || "midnight";
   const theme = THEMES[themeId] || THEMES.midnight;
+  const shopUrl = getAppUrl();
 
   return (
-    <html lang="en" className="bg-[#f9fafb] overscroll-y-none" suppressHydrationWarning>
+    <html lang="en" className="bg-[#f9fafb]" suppressHydrationWarning>
       <head>
         <meta name="format-detection" content="telephone=no" />
         <link rel="preconnect" href="https://ik.imagekit.io" />
@@ -205,13 +175,13 @@ export default async function RootLayout({
                 "@type": "WebSite",
                 name: settings.storeName || "Afra Tech Point",
                 alternateName: ["AfraTechPoint", "আফরা টেক পয়েন্ট"],
-                url: process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop",
+                url: shopUrl,
                 description: settings.shortDescription,
                 potentialAction: {
                   "@type": "SearchAction",
                   target: {
                     "@type": "EntryPoint",
-                    urlTemplate: `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/shop?q={search_term_string}`,
+                    urlTemplate: `${shopUrl}/shop?q={search_term_string}`,
                   },
                   "query-input": "required name=search_term_string",
                 },
@@ -220,9 +190,9 @@ export default async function RootLayout({
                 "@context": "https://schema.org",
                 "@type": "Store",
                 name: settings.storeName || "Afra Tech Point",
-                url: process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop",
-                logo: settings.logoUrl || `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/logo.png`,
-                image: settings.logoUrl || `${process.env.NEXT_PUBLIC_SHOP_URL || "https://afratechpoint.shop"}/logo.png`,
+                url: shopUrl,
+                logo: settings.logoUrl || `${shopUrl}/logo.png`,
+                image: settings.logoUrl || `${shopUrl}/logo.png`,
                 description: settings.shortDescription,
                 telephone: settings.contactPhone,
                 email: settings.contactEmail,
@@ -253,25 +223,13 @@ export default async function RootLayout({
           }}
         />
       </head>
-      <body className={`${inter.className} min-h-[100dvh] bg-[#f9fafb] overscroll-y-none overflow-x-hidden`} suppressHydrationWarning>
+      <body className={`${inter.className} min-h-[100dvh] bg-[#f9fafb]`} suppressHydrationWarning>
         <AuthProvider>
           <SettingsProvider initialSettings={settings}>
-            {settings.announcementActive && settings.announcementText && (
-              <div 
-                className="w-full text-center py-2 px-4 shadow-sm text-xs font-bold z-[110] relative transition-colors duration-500"
-                style={{ 
-                  backgroundColor: 'var(--primary)',
-                  color: 'var(--primary-text)' 
-                }}
-              >
-                {settings.announcementText}
-              </div>
-            )}
-            <ClientLayout>
-              <div id="main-content" className="w-full">
-                {children}
-              </div>
-            </ClientLayout>
+            <ClientLayout />
+            <div id="main-content" className="w-full pb-20 md:pb-0">
+              {children}
+            </div>
           </SettingsProvider>
         </AuthProvider>
       </body>

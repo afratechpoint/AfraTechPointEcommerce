@@ -3,6 +3,8 @@
 // hero image URL into the initial HTML, so the browser can
 // start fetching it immediately (before JS runs) → lower LCP.
 
+export const dynamic = "force-dynamic";
+
 import React from "react";
 import { storage } from "@/lib/storage";
 import HeroSlider from "@/components/HeroSlider";
@@ -22,25 +24,26 @@ export default async function Home() {
   }
 
   return (
-    <div className="flex flex-col w-full">
+    <div className="flex flex-col w-full min-h-screen">
       {/* Semantic H1 for search engines & accessibility */}
       <h1 className="sr-only">
         Afra Tech Point - Best Online Tech & Gadget Shop in Bangladesh
       </h1>
 
-      {/* Constraints for centered content */}
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8">
-        {/* Navigation Bar — client component (needs useCart / useAuth) */}
-        <HomeNavWrapper />
+      {/* Navigation Bar — full width edge-to-edge */}
+      <HomeNavWrapper />
 
-        {/* Hero Slider — client component that receives SSR'd banner data */}
-        {banners.length > 0 && <HeroSlider banners={banners} />}
-      </div>
+      {/* Hero Slider — full width edge-to-edge banner */}
+      {banners.length > 0 && (
+        <section className="w-full">
+          <HeroSlider banners={banners} />
+        </section>
+      )}
 
       {/* Full Catalog Section */}
-      <div className="mt-4 md:mt-16">
+      <section className="w-full mt-4 md:mt-8">
         <ProductGrid />
-      </div>
+      </section>
 
       {/* Footer */}
       <Footer />

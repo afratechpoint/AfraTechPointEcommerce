@@ -7,6 +7,28 @@ export { adminDb, adminMessaging, getAdminRtDb, adminAuth };
 const SETTINGS_DOC_ID = "main";
 const SETTINGS_COLLECTION = "config";
 
+/**
+ * Recursively removes `undefined` properties so Firebase Admin SDK never rejects
+ * `add()` / `update()` / `set()` calls when optional fields are omitted.
+ */
+function stripUndefinedDeep(val: any): any {
+  if (val === undefined) return undefined;
+  if (val === null || typeof val !== "object") return val;
+  if (val instanceof Date) return val;
+  if (typeof val.toDate === "function" || typeof val._methodName === "string") return val;
+  if (Array.isArray(val)) {
+    return val.map((item) => stripUndefinedDeep(item)).filter((item) => item !== undefined);
+  }
+  const clean: Record<string, any> = {};
+  for (const key of Object.keys(val)) {
+    const v = stripUndefinedDeep(val[key]);
+    if (v !== undefined) {
+      clean[key] = v;
+    }
+  }
+  return clean;
+}
+
 // --- Settings ---
 export async function getSettingsFromFirestore() {
   const docRef = adminDb.collection(SETTINGS_COLLECTION).doc(SETTINGS_DOC_ID);
@@ -147,8 +169,11 @@ export async function getAllOrders() {
 }
 
 export async function updateOrderInFirestore(orderId: string, fields: any) {
+  const cleanFields = stripUndefinedDeep(fields) || {};
+  delete cleanFields.id;
+  delete cleanFields.createdAt;
   const docRef = adminDb.collection("orders").doc(orderId);
-  await docRef.update({ ...fields, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  await docRef.update({ ...cleanFields, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
 
   // If status updated, notify the user (non-blocking)
   if (fields.orderStatus || fields.status) {
@@ -159,24 +184,45 @@ export async function updateOrderInFirestore(orderId: string, fields: any) {
       const snap = await docRef.get();
       const order = snap.data();
       if (order?.userId) {
-        console.log(`[Notification] Recipient UID: ${order.userId}`);
-        const result = await createNotificationInFirestore({
+        const isVirt =
+          order.hasPhysical === false ||
+          (Array.isArray(order.items) &&
+            order.items.length > 0 &&
+            order.items.every((it: any) => it.productKind === "virtual"));
+        const rawSt = String(newStatus).toLowerCase();
+        const prettyStatus =
+          rawSt === "delivered" || rawSt === "completed"
+            ? isVirt
+              ? "Completed"
+              : "Delivered"
+            : rawSt === "processing"
+            ? isVirt
+              ? "In Progress"
+              : "Processing"
+            : rawSt.charAt(0).toUpperCase() + rawSt.slice(1);
+
+        const cancelReason =
+          rawSt === "cancelled"
+            ? String(fields.cancellationReason ?? order.cancellationReason ?? "").trim()
+            : "";
+
+        await createNotificationInFirestore({
           type: "order_status_update",
-          title: "Order Update",
-          message: `Your order #${orderId.slice(0, 8).toUpperCase()} status is now: ${newStatus}.`,
+          title: rawSt === "cancelled" ? "Order Cancelled" : "Order Update",
+          message:
+            rawSt === "cancelled" && cancelReason
+              ? `Your order #${orderId.slice(0, 8).toUpperCase()} was cancelled. Reason: ${cancelReason}`
+              : `Your order #${orderId.slice(0, 8).toUpperCase()} status is now ${prettyStatus}.`,
           recipient: order.userId,
           link: `/account/orders/${orderId}`,
         });
-        console.log(`[Notification] Result:`, result);
-      } else {
-        console.warn(`[Notification] Order ${orderId} has no userId. Cannot send push.`);
       }
     } catch (notifErr: any) {
       console.error("[Notification] Failed to create status notification:", notifErr.message);
     }
   }
 
-  // If payment status confirmed, notify customer
+  // If payment status confirmed or refunded, notify customer
   if (fields.paymentStatus === "confirmed" || fields.paymentStatus === "paid") {
     try {
       const snap = await docRef.get();
@@ -192,6 +238,22 @@ export async function updateOrderInFirestore(orderId: string, fields: any) {
       }
     } catch (notifErr: any) {
       console.error("[Notification] Failed to create payment notification:", notifErr.message);
+    }
+  } else if (fields.paymentStatus === "refunded") {
+    try {
+      const snap = await docRef.get();
+      const order = snap.data();
+      if (order?.userId) {
+        await createNotificationInFirestore({
+          type: "order_status_update",
+          title: "Payment Refunded",
+          message: `Your payment for order #${orderId.slice(0, 8).toUpperCase()} has been refunded.`,
+          recipient: order.userId,
+          link: `/account/orders/${orderId}`,
+        });
+      }
+    } catch (notifErr: any) {
+      console.error("[Notification] Failed to create refund notification:", notifErr.message);
     }
   }
 }
@@ -210,21 +272,29 @@ export async function getProductsFromFirestore() {
 }
 
 export async function createProductInFirestore(data: any) {
+  const cleanData = stripUndefinedDeep(data) || {};
+  delete cleanData.id;
   const docRef = await adminDb.collection("products").add({
-    ...data,
+    ...cleanData,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
-  return { 
-    id: docRef.id, 
-    ...data,
-    createdAt: new Date().toISOString()
+  return {
+    id: docRef.id,
+    ...cleanData,
+    createdAt: new Date().toISOString(),
   };
 }
 
 export async function updateProductInFirestore(id: string, data: any) {
+  const cleanData = stripUndefinedDeep(data) || {};
+  delete cleanData.id;
+  delete cleanData.createdAt;
   const docRef = adminDb.collection("products").doc(id);
-  await docRef.update({ ...data, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  await docRef.update({
+    ...cleanData,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
 }
 
 export async function deleteProductFromFirestore(id: string) {
@@ -268,37 +338,22 @@ export async function createNotificationInFirestore(notif: any) {
 }
 
 export async function getNotifications(recipient: string = "admin", limit: number = 20) {
-  try {
-    const q = adminDb.collection("notifications")
-      .where("recipient", "==", recipient)
-      .orderBy("createdAt", "desc")
-      .limit(limit);
-      
-    const snap = await q.get();
-    return snap.docs.map((d: any) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : (data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString()),
-      };
-    });
-  } catch (err: any) {
-    // If composite index not yet created, fetch documents and sort in-memory
-    console.warn("getNotifications: index may be missing, retrying with in-memory sort:", err.message);
-    const q = adminDb.collection("notifications").where("recipient", "==", recipient);
-    const snap = await q.get();
-    const list = snap.docs.map((d: any) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : (data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString()),
-      };
-    });
-    list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return list.slice(0, limit);
-  }
+  const q = adminDb.collection("notifications").where("recipient", "==", recipient);
+  const snap = await q.get();
+  const list = snap.docs.map((d: any) => {
+    const data = d.data();
+    return {
+      id: d.id,
+      ...data,
+      createdAt: data.createdAt?.toDate
+        ? data.createdAt.toDate().toISOString()
+        : data.createdAt
+        ? new Date(data.createdAt).toISOString()
+        : new Date().toISOString(),
+    };
+  });
+  list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return list.slice(0, limit);
 }
 
 export async function markNotificationAsRead(id: string) {

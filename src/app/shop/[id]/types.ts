@@ -1,11 +1,14 @@
 // ── TypeScript interfaces shared across the product detail page ──
 
+import type { ProductKind, VirtualType, VirtualConfig } from "@/types/product";
+
 export interface Variant {
   id: string;
   name: string;
   regularPrice?: number;
   salePrice?: number;
   image?: string;
+  stock?: number | null;
 }
 
 export interface Specification {
@@ -41,7 +44,11 @@ export interface Product {
   /** Total number of reviews */
   reviewCount?: number;
   /** Available stock quantity */
-  stock?: number;
+  stock?: number | null;
+
+  productKind?: ProductKind;
+  virtualType?: VirtualType;
+  virtualConfig?: VirtualConfig;
 }
 
 export interface CartItem {

@@ -1,8 +1,9 @@
 import { MetadataRoute } from 'next'
 import { storage } from '@/lib/storage'
+import { getAppUrl } from '@/lib/app-url'
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const shopUrl = process.env.NEXT_PUBLIC_SHOP_URL || 'https://afratechpoint.shop'
+  const shopUrl = getAppUrl()
   const lastModified = new Date()
 
   // Base routes with optimal SEO priority weights

@@ -5,6 +5,7 @@
 
 import { revalidatePath } from "next/cache";
 import { CartItem } from "./types";
+import { getAppUrl } from "@/lib/app-url";
 
 /**
  * addToCartAction
@@ -43,9 +44,7 @@ export async function addToCartAction(item: CartItem): Promise<{
 export async function fetchProductById(id: string) {
   try {
     // Absolute URL required for server-side fetch in Next.js
-    const baseUrl =
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+    const baseUrl = getAppUrl();
 
     const res = await fetch(`${baseUrl}/api/products/${id}`, {
       next: { revalidate: 60 }, // ISR: refresh product data every 60 s

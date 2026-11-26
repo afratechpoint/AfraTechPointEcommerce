@@ -1,12 +1,15 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Trash2, ShoppingBag, ArrowLeft, ArrowRight } from "lucide-react";
+import { Trash2, ShoppingBag, ArrowLeft, ArrowRight, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import { useCart } from "@/lib/cart";
 import { useSettings } from "@/components/SettingsProvider";
+import { useRealtime } from "@/lib/realtime-client";
+import { getAvailableStock, type StockableProduct } from "@/lib/inventory";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
@@ -15,9 +18,42 @@ export default function CartPage() {
   const settings = useSettings();
   const router = useRouter();
 
+  const [catalog, setCatalog] = useState<StockableProduct[]>([]);
+
+  const loadCatalog = useCallback(() => {
+    fetch("/api/products", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (Array.isArray(data)) setCatalog(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadCatalog();
+  }, [loadCatalog]);
+
+  useRealtime("products", loadCatalog);
+
+  const catalogMap = useMemo(() => new Map(catalog.map((p) => [p.id, p])), [catalog]);
+
+  const hasStockIssue = useMemo(() => {
+    if (catalog.length === 0) return false;
+    return items.some((item) => {
+      const prod = catalogMap.get(item.id);
+      if (!prod) return true;
+      const avail = getAvailableStock(prod, item.variantName || null);
+      return avail !== null && (avail <= 0 || item.quantity > avail);
+    });
+  }, [items, catalog.length, catalogMap]);
+
   const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
   const handleCheckout = () => {
+    if (hasStockIssue) {
+      toast.error("Please remove or adjust Stock Out items before checkout.");
+      return;
+    }
     router.push("/checkout");
   };
 
@@ -25,7 +61,7 @@ export default function CartPage() {
     <div className="flex flex-col min-h-screen bg-[#f8f9fa] pb-10">
       <Navbar searchEnabled={false} />
       
-      <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 md:px-8 py-8 md:py-12">
+      <main className="flex-1 w-full max-w-[1800px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12 py-8 md:py-12">
         <div className="mb-6">
           <Link href="/shop" className="inline-flex items-center gap-2 text-[11px] font-bold text-gray-500 hover:text-black transition-colors mb-4 uppercase tracking-widest">
             <ArrowLeft size={14} />
@@ -65,7 +101,18 @@ export default function CartPage() {
 
                 <div className="space-y-6">
                   <AnimatePresence>
-                    {items.map((item) => (
+                    {items.map((item) => {
+                      const prod = catalogMap.get(item.id);
+                      const avail =
+                        catalog.length > 0
+                          ? prod
+                            ? getAvailableStock(prod, item.variantName || null)
+                            : 0
+                          : null;
+                      const isItemStockOut = avail !== null && avail <= 0;
+                      const exceedsStock = avail !== null && avail > 0 && item.quantity > avail;
+
+                      return (
                       <motion.div 
                         key={`${item.id}-${item.variantName || 'default'}`}
                         layout
@@ -84,9 +131,21 @@ export default function CartPage() {
                             />
                           </Link>
                           <div className="flex-1 min-w-0">
-                            <h3 className="font-bold text-gray-900 text-xs md:text-sm leading-tight hover:text-black transition-all truncate">
-                              <Link href={`/shop/${item.id}`}>{item.name}</Link>
-                            </h3>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-bold text-gray-900 text-xs md:text-sm leading-tight hover:text-black transition-all truncate">
+                                <Link href={`/shop/${item.id}`}>{item.name}</Link>
+                              </h3>
+                              {isItemStockOut && (
+                                <span className="px-2 py-0.5 rounded-md bg-red-50 border border-red-200 text-red-600 text-[10px] font-bold uppercase">
+                                  Stock Out
+                                </span>
+                              )}
+                              {exceedsStock && (
+                                <span className="px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold">
+                                  Only {avail} left
+                                </span>
+                              )}
+                            </div>
                             {item.variantName && (
                               <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">{item.variantName}</p>
                             )}
@@ -116,8 +175,12 @@ export default function CartPage() {
                                 </button>
                                 <span className="w-4 text-center text-[11px] font-black text-gray-900">{item.quantity}</span>
                                 <button 
-                                  onClick={() => updateQuantity(item.id, item.variantName, item.quantity + 1)}
-                                  className="w-6 h-6 flex items-center justify-center rounded-md bg-white text-gray-600 shadow-sm font-bold hover:text-black active:scale-90 transition-all text-sm"
+                                  disabled={isItemStockOut || (avail !== null && item.quantity >= avail)}
+                                  onClick={() => {
+                                    if (avail !== null && item.quantity >= avail) return;
+                                    updateQuantity(item.id, item.variantName, item.quantity + 1);
+                                  }}
+                                  className="w-6 h-6 flex items-center justify-center rounded-md bg-white text-gray-600 shadow-sm font-bold hover:text-black active:scale-90 transition-all text-sm disabled:opacity-30 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -142,7 +205,8 @@ export default function CartPage() {
                            </div>
                         </div>
                       </motion.div>
-                    ))}
+                      );
+                    })}
                   </AnimatePresence>
                 </div>
                 
@@ -184,16 +248,29 @@ export default function CartPage() {
                   </div>
                 </div>
 
+                {hasStockIssue && (
+                  <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 flex items-start gap-2 text-xs text-red-600 font-medium">
+                    <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                    <span>Remove or reduce Stock Out items in your cart to proceed.</span>
+                  </div>
+                )}
+
                 <button
                   onClick={handleCheckout}
-                  disabled={items.length === 0}
+                  disabled={items.length === 0 || hasStockIssue}
                   style={{ 
-                    backgroundColor: 'var(--primary)',
-                    color: 'var(--primary-text)' 
+                    backgroundColor: hasStockIssue ? '#fef2f2' : 'var(--primary)',
+                    color: hasStockIssue ? '#dc2626' : 'var(--primary-text)' 
                   }}
-                  className="w-full py-3 rounded-xl font-bold uppercase tracking-widest shadow-xl shadow-[var(--primary-accent)] hover:scale-[1.02] hover:bg-[var(--primary-hover)] active:scale-[0.98] transition-all text-[11px] disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full py-3 rounded-xl font-bold uppercase tracking-widest shadow-xl shadow-[var(--primary-accent)] hover:scale-[1.02] hover:bg-[var(--primary-hover)] active:scale-[0.98] transition-all text-[11px] disabled:opacity-80 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none flex items-center justify-center gap-2"
                 >
-                  Proceed to Checkout <ArrowRight size={14} />
+                  {hasStockIssue ? (
+                    "Stock Out"
+                  ) : (
+                    <>
+                      Proceed to Checkout <ArrowRight size={14} />
+                    </>
+                  )}
                 </button>
                 
                 <div className="mt-4 flex items-center justify-center gap-2 text-[9px] font-bold text-gray-400 uppercase tracking-widest">

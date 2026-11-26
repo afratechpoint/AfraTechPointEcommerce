@@ -3,22 +3,42 @@ import { readData, writeData, settingsFile, productsFile, ordersFile, profilesFi
 import path from "path";
 import crypto from "crypto";
 import { FALLBACK_PRODUCTS, FALLBACK_SETTINGS, FALLBACK_ORDERS } from "./fallback_constants";
+import { emitRealtime, onRealtimeCacheInvalidate, ensureFirestoreWatchers } from "./realtime-bus";
 
 const USE_FIREBASE = process.env.NEXT_PUBLIC_USE_FIREBASE === "true";
 
-// Simple in-memory cache for high-frequency settings
-let memoryCache: { 
-  settings?: any; 
-  products?: any[]; 
-  lastFetch: number;
+interface StorageMemoryCache {
+  settings?: any;
+  settingsFetchedAt: number;
+  products?: any[];
+  productsFetchedAt: number;
   deletedProductIds: Set<string>;
   deletedOrderIds: Set<string>;
-} = { 
-  lastFetch: 0,
-  deletedProductIds: new Set(),
-  deletedOrderIds: new Set()
-};
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes — reduces Firestore reads by 10x
+}
+
+const gCache = globalThis as unknown as { __afraStorageCache?: StorageMemoryCache };
+if (!gCache.__afraStorageCache) {
+  gCache.__afraStorageCache = {
+    settingsFetchedAt: 0,
+    productsFetchedAt: 0,
+    deletedProductIds: new Set(),
+    deletedOrderIds: new Set(),
+  };
+}
+const memoryCache = gCache.__afraStorageCache;
+const CACHE_TTL = 30 * 1000; // Short fallback TTL — live Firestore watchers invalidate immediately
+
+onRealtimeCacheInvalidate((topic) => {
+  if (topic === "settings") {
+    memoryCache.settings = undefined;
+    memoryCache.settingsFetchedAt = 0;
+  } else if (topic === "products") {
+    memoryCache.products = undefined;
+    memoryCache.productsFetchedAt = 0;
+  }
+});
+
+ensureFirestoreWatchers();
 
 // Server-side only Firestore / Firebase adapter
 const getAdapter = async () => {
@@ -30,7 +50,7 @@ export const storage = {
   // ── Settings ──────────────────────────────────────────────────────────
   getSettings: cache(async function() {
     const now = Date.now();
-    if (memoryCache.settings && (now - memoryCache.lastFetch < CACHE_TTL)) {
+    if (memoryCache.settings && (now - memoryCache.settingsFetchedAt < CACHE_TTL)) {
       return memoryCache.settings;
     }
 
@@ -53,21 +73,27 @@ export const storage = {
     }
 
     memoryCache.settings = settings;
-    memoryCache.lastFetch = now;
+    memoryCache.settingsFetchedAt = now;
     return settings;
   }),
 
   async updateSettings(data: any) {
-    memoryCache.settings = undefined; // Invalidate cache
+    memoryCache.settings = undefined;
+    memoryCache.settingsFetchedAt = 0;
+    let res;
     if (USE_FIREBASE) {
       try {
         const { updateSettingsInFirestore } = await getAdapter();
-        return await updateSettingsInFirestore(data);
+        res = await updateSettingsInFirestore(data);
+        emitRealtime("settings");
+        return res;
       } catch (err) {
         console.warn("Firestore settings update failed. Using local fallback.", err);
       }
     }
-    return await writeData(settingsFile, data);
+    res = await writeData(settingsFile, data);
+    emitRealtime("settings");
+    return res;
   },
 
   // ── Orders ────────────────────────────────────────────────────────────
@@ -129,7 +155,10 @@ export const storage = {
     if (USE_FIREBASE) {
       try {
         const { createOrderInFirestore } = await getAdapter();
-        return await createOrderInFirestore(data);
+        const created = await createOrderInFirestore(data);
+        emitRealtime("orders");
+        emitRealtime("notifications");
+        return created;
       } catch (err) {
         console.warn("Firestore createOrder failed. Using local fallback.", err);
       }
@@ -138,6 +167,8 @@ export const storage = {
     const newOrder = { id: crypto.randomUUID(), ...data, createdAt: new Date().toISOString() };
     orders.push(newOrder);
     await writeData(ordersFile, orders);
+    emitRealtime("orders");
+    emitRealtime("notifications");
     return newOrder;
   },
 
@@ -145,7 +176,10 @@ export const storage = {
     if (USE_FIREBASE) {
       try {
         const { updateOrderInFirestore } = await getAdapter();
-        return await updateOrderInFirestore(id, fields);
+        const res = await updateOrderInFirestore(id, fields);
+        emitRealtime("orders");
+        emitRealtime("notifications");
+        return res;
       } catch (err) {
         console.warn("Firestore updateOrder failed. Using local fallback.", err);
       }
@@ -156,6 +190,8 @@ export const storage = {
       orders[idx] = { ...orders[idx], ...fields, updatedAt: new Date().toISOString() };
       await writeData(ordersFile, orders);
     }
+    emitRealtime("orders");
+    emitRealtime("notifications");
   },
 
   async deleteOrder(id: string) {
@@ -164,6 +200,7 @@ export const storage = {
       try {
         const { deleteOrderFromFirestore } = await getAdapter();
         await deleteOrderFromFirestore(id);
+        emitRealtime("orders");
         return;
       } catch (err) {
         console.warn("Firestore deleteOrder failed. Using local fallback.", err);
@@ -172,6 +209,7 @@ export const storage = {
     const orders = await readData(ordersFile, []);
     const filtered = orders.filter((o: any) => o.id !== id);
     await writeData(ordersFile, filtered);
+    emitRealtime("orders");
   },
 
   async getPendingOrdersCount() {
@@ -190,7 +228,7 @@ export const storage = {
   // ── Products ──────────────────────────────────────────────────────────
   getProducts: cache(async function() {
     const now = Date.now();
-    if (memoryCache.products && (now - memoryCache.lastFetch < CACHE_TTL)) {
+    if (memoryCache.products && (now - memoryCache.productsFetchedAt < CACHE_TTL)) {
       return memoryCache.products.filter((p: any) => !memoryCache.deletedProductIds.has(p.id));
     }
 
@@ -213,7 +251,7 @@ export const storage = {
     }
 
     memoryCache.products = products;
-    memoryCache.lastFetch = now;
+    memoryCache.productsFetchedAt = now;
     return products.filter((p: any) => !memoryCache.deletedProductIds.has(p.id));
   }),
 
@@ -223,11 +261,14 @@ export const storage = {
   },
 
   async createProduct(data: any) {
-    memoryCache.products = undefined; // Invalidate
+    memoryCache.products = undefined;
+    memoryCache.productsFetchedAt = 0;
     if (USE_FIREBASE) {
       try {
         const { createProductInFirestore } = await getAdapter();
-        return await createProductInFirestore(data);
+        const created = await createProductInFirestore(data);
+        emitRealtime("products");
+        return created;
       } catch (err) {
         console.warn("Firestore createProduct failed. Using local fallback.", err);
       }
@@ -236,15 +277,19 @@ export const storage = {
     const newProduct = { id: crypto.randomUUID(), ...data };
     products.push(newProduct);
     await writeData(productsFile, products);
+    emitRealtime("products");
     return newProduct;
   },
 
   async updateProduct(id: string, data: any) {
-    memoryCache.products = undefined; // Invalidate
+    memoryCache.products = undefined;
+    memoryCache.productsFetchedAt = 0;
     if (USE_FIREBASE) {
       try {
         const { updateProductInFirestore } = await getAdapter();
-        return await updateProductInFirestore(id, data);
+        const res = await updateProductInFirestore(id, data);
+        emitRealtime("products");
+        return res;
       } catch (err) {
         console.warn("Firestore updateProduct failed. Using local fallback.", err);
       }
@@ -255,15 +300,19 @@ export const storage = {
       products[idx] = { ...products[idx], ...data };
       await writeData(productsFile, products);
     }
+    emitRealtime("products");
   },
 
   async deleteProduct(id: string) {
     memoryCache.deletedProductIds.add(id);
-    memoryCache.products = undefined; // Invalidate
+    memoryCache.products = undefined;
+    memoryCache.productsFetchedAt = 0;
     if (USE_FIREBASE) {
       try {
         const { deleteProductFromFirestore } = await getAdapter();
-        return await deleteProductFromFirestore(id);
+        const res = await deleteProductFromFirestore(id);
+        emitRealtime("products");
+        return res;
       } catch (err) {
         console.warn("Firestore deleteProduct failed. Using local fallback.", err);
       }
@@ -271,6 +320,7 @@ export const storage = {
     const products = await readData(productsFile, []);
     const filtered = products.filter((p: any) => p.id !== id);
     await writeData(productsFile, filtered);
+    emitRealtime("products");
   },
 
   // ── Notifications ─────────────────────────────────────────────────────
@@ -290,44 +340,56 @@ export const storage = {
     if (USE_FIREBASE) {
       try {
         const { markNotificationAsRead } = await getAdapter();
-        return await markNotificationAsRead(id);
+        const res = await markNotificationAsRead(id);
+        emitRealtime("notifications");
+        return res;
       } catch (err) {
         console.warn("Firestore markNotificationAsRead failed.", err);
       }
     }
+    emitRealtime("notifications");
   },
 
   async markAllNotificationsAsRead(recipient: string = "admin") {
     if (USE_FIREBASE) {
       try {
         const { markAllNotificationsAsRead } = await getAdapter();
-        return await markAllNotificationsAsRead(recipient);
+        const res = await markAllNotificationsAsRead(recipient);
+        emitRealtime("notifications");
+        return res;
       } catch (err) {
         console.warn("Firestore markAllNotificationsAsRead failed.", err);
       }
     }
+    emitRealtime("notifications");
   },
 
   async deleteNotification(id: string) {
     if (USE_FIREBASE) {
       try {
         const { deleteNotification } = await getAdapter();
-        return await deleteNotification(id);
+        const res = await deleteNotification(id);
+        emitRealtime("notifications");
+        return res;
       } catch (err) {
         console.warn("Firestore deleteNotification failed.", err);
       }
     }
+    emitRealtime("notifications");
   },
 
   async clearAllNotifications(recipient: string = "admin") {
     if (USE_FIREBASE) {
       try {
         const { clearAllNotifications } = await getAdapter();
-        return await clearAllNotifications(recipient);
+        const res = await clearAllNotifications(recipient);
+        emitRealtime("notifications");
+        return res;
       } catch (err) {
         console.warn("Firestore clearAllNotifications failed.", err);
       }
     }
+    emitRealtime("notifications");
   },
 
   async savePushToken(uid: string, token: string) {

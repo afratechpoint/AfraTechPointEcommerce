@@ -76,16 +76,14 @@ export default function PremiumContactPage() {
 
   return (
     <div className="min-h-screen bg-[#fafafa] selection:bg-black selection:text-white flex flex-col">
-      <div className="w-full max-w-[1440px] mx-auto flex flex-col relative px-4 md:px-8 mb-8">
-        <Navbar searchEnabled={false} />
-      </div>
+      <Navbar searchEnabled={false} />
 
       {/* ── MAIN CONTENT LAYER ── */}
-      <div className="w-full max-w-[1440px] mx-auto px-4 md:px-8 pb-24">
+      <div className="w-full max-w-[1800px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12 py-8 pb-24 flex-1">
         
 
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 max-w-5xl mx-auto">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 w-full">
           
           {/* Form Side */}
           <div className="lg:col-span-7">
@@ -190,7 +188,7 @@ export default function PremiumContactPage() {
         </div>
 
         {/* ── FAQ SECTION ── */}
-        <div className="mt-16 max-w-3xl mx-auto">
+        <div className="mt-16 w-full">
           <div className="text-center mb-8">
             <h2 className="text-xl font-bold text-gray-900 mb-2">Frequently Asked Questions</h2>
             <p className="text-gray-500 text-sm font-medium">Quick answers to common questions</p>

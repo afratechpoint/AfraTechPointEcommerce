@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase/admin";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { EmailVerificationEmail } from "@/emails/renderers/index";
+import { buildAppUrl } from "@/lib/app-url";
 
 export async function POST(req: Request) {
   try {
@@ -19,9 +20,14 @@ export async function POST(req: Request) {
     const url = new URL(firebaseLink);
     const oobCode = url.searchParams.get("oobCode");
 
-    // 3. Construct our branded URL
-    const shopUrl = process.env.NEXT_PUBLIC_SHOP_URL || "http://localhost:3000";
-    const verificationLink = `${shopUrl}/verify-email?oobCode=${oobCode}`;
+    // 3. Build our branded URL on the canonical public domain.
+    // getAppUrl() never emits localhost from a deployed app.
+    if (!oobCode) {
+      throw new Error("Firebase did not return a verification code.");
+    }
+    const verificationLink = buildAppUrl(
+      `/verify-email?oobCode=${encodeURIComponent(oobCode)}`
+    );
 
     // 4. Send the branded email
     const result = await sendEmail({

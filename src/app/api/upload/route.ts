@@ -3,15 +3,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { storage } from '@/lib/storage';
 import path from 'path';
 
-// ImageKit configuration
-const IMAGEKIT_PUBLIC_KEY  = "public_q6EAh8AgOv6qeEBIe6xLUlWF2XI=";
-const IMAGEKIT_PRIVATE_KEY = "private_/bOCaYv2iR0Z83fl32njT2mo+B4=";
-const IMAGEKIT_ENDPOINT    = "https://ik.imagekit.io/afratechpoint";
+// ImageKit configuration (env overrides keep the key out of source when set).
+const IMAGEKIT_PUBLIC_KEY  = process.env.IMAGEKIT_PUBLIC_KEY || "public_q6EAh8AgOv6qeEBIe6xLUlWF2XI=";
+const IMAGEKIT_PRIVATE_KEY = process.env.IMAGEKIT_PRIVATE_KEY || "private_/bOCaYv2iR0Z83fl32njT2mo+B4=";
+const IMAGEKIT_ENDPOINT    = process.env.IMAGEKIT_ENDPOINT || "https://ik.imagekit.io/afratechpoint";
+const MAX_FILE_BYTES       = 10 * 1024 * 1024; // ImageKit per-file limit
 
-// Helper for ImageKit Authorization Header (Basic Auth)
-const getImageKitAuthHeader = () => {
-  return 'Basic ' + Buffer.from(IMAGEKIT_PRIVATE_KEY + ':').toString('base64');
-};
+const getImageKitAuthHeader = () => 'Basic ' + Buffer.from(IMAGEKIT_PRIVATE_KEY + ':').toString('base64');
+
+function safeFileName(name: string) {
+  const ext = path.extname(name).toLowerCase();
+  const base = path.basename(name, ext)
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return `${base || "image"}${ext}`;
+}
+
+function errorMessage(error: any): string {
+  return error?.message || error?.error?.message || error?.error || "Upload failed";
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -33,8 +46,8 @@ export async function GET(request: NextRequest) {
 
     const media = await storage.getMedia();
     return NextResponse.json(media || []);
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to list files' }, { status: 500 });
+  } catch (error: any) {
+    return NextResponse.json({ error: errorMessage(error) || 'Failed to list files' }, { status: 500 });
   }
 }
 
@@ -47,61 +60,77 @@ export async function POST(request: NextRequest) {
     }
 
     const formData = await request.formData();
-    const files = formData.getAll('files') as File[];
+    const files = formData.getAll('files').filter((f): f is File => typeof f !== 'string' && f.size > 0);
 
-    if (!files || files.length === 0) {
+    if (!files.length) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
     }
 
     const uploaded: { name: string; url: string }[] = [];
+    const failed: { name: string; error: string }[] = [];
 
+    // Each file is handled independently: one bad file no longer aborts the
+    // whole batch, and the client gets the real reason for each failure.
     for (const file of files) {
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
+      try {
+        if (file.size > MAX_FILE_BYTES) {
+          throw new Error(`"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB. ImageKit allows up to 10 MB per file.`);
+        }
 
-      // Prepare ImageKit Upload Request
-      const ikFormData = new FormData();
-      ikFormData.append('file', new Blob([buffer]));
-      ikFormData.append('fileName', file.name);
-      ikFormData.append('useUniqueFileName', 'true');
-      ikFormData.append('folder', '/products');
+        const contentType = file.type || 'application/octet-stream';
+        if (!contentType.startsWith('image/')) {
+          throw new Error(`"${file.name}" is not a supported image file.`);
+        }
 
-      const ikResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': getImageKitAuthHeader(),
-        },
-        body: ikFormData,
-      });
+        const fileName = safeFileName(file.name);
+        const buffer = Buffer.from(await file.arrayBuffer());
 
-      const ikData = await ikResponse.json();
+        const ikFormData = new FormData();
+        // Preserve the MIME type — omitting it makes ImageKit reject some formats.
+        ikFormData.append('file', new Blob([buffer], { type: contentType }), fileName);
+        ikFormData.append('fileName', fileName);
+        ikFormData.append('useUniqueFileName', 'true');
+        ikFormData.append('folder', '/products');
 
-      if (!ikResponse.ok) {
-        console.error('[ImageKit Error]', ikData);
-        throw new Error(ikData.message || 'ImageKit upload failed');
+        const ikResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+          method: 'POST',
+          headers: { 'Authorization': getImageKitAuthHeader() },
+          body: ikFormData,
+        });
+
+        let ikData: any = {};
+        try { ikData = await ikResponse.json(); } catch { /* non-JSON error */ }
+
+        if (!ikResponse.ok) {
+          throw new Error(ikData?.message || ikData?.error?.message || `ImageKit rejected the file (HTTP ${ikResponse.status}).`);
+        }
+        if (!ikData.url) {
+          throw new Error('ImageKit did not return a file URL.');
+        }
+
+        await storage.saveMedia({
+          name: ikData.name || fileName,
+          url: ikData.url,
+          size: file.size,
+          deleteUrl: ikData.fileId,
+          imgbbId: '',
+          uploadedAt: new Date().toISOString()
+        });
+
+        uploaded.push({ name: ikData.name || fileName, url: ikData.url });
+      } catch (error: any) {
+        console.error(`[Upload] Failed for "${file.name}":`, error);
+        failed.push({ name: file.name, error: errorMessage(error) });
       }
-
-      const finalUrl = ikData.url;
-      const finalName = ikData.name;
-      const fileId = ikData.fileId; // Important for deletion
-
-      const mediaData = {
-        name: finalName,
-        url: finalUrl,
-        size: file.size,
-        deleteUrl: fileId, // Store ImageKit fileId here for later deletion
-        imgbbId: '',       // Blank for ImageKit
-        uploadedAt: new Date().toISOString()
-      };
-      
-      await storage.saveMedia(mediaData);
-      uploaded.push({ name: finalName, url: finalUrl });
     }
 
-    return NextResponse.json({ success: true, files: uploaded });
+    return NextResponse.json(
+      { success: failed.length === 0, files: uploaded, failed },
+      { status: failed.length === files.length ? 400 : 200 }
+    );
   } catch (error: any) {
     console.error('Master Upload error:', error);
-    return NextResponse.json({ error: error.message || 'Upload failed' }, { status: 500 });
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -120,21 +149,19 @@ export async function DELETE(request: NextRequest) {
     const mediaItem = mediaList.find((m: any) => m.name === filename);
 
     if (mediaItem) {
-      // 1. If it's an ImageKit file (deleteUrl is fileId)
+      // 1. ImageKit file (deleteUrl stores the fileId)
       if (mediaItem.deleteUrl && !mediaItem.deleteUrl.startsWith('media/')) {
         try {
           await fetch(`https://api.imagekit.io/v1/files/${mediaItem.deleteUrl}`, {
             method: 'DELETE',
-            headers: {
-              'Authorization': getImageKitAuthHeader(),
-            },
+            headers: { 'Authorization': getImageKitAuthHeader() },
           });
         } catch (e) {
           console.warn(`[ImageKit] Deletion failed for ${mediaItem.deleteUrl}`, e);
         }
       }
 
-      // 2. Legacy: ImgBB Deletion
+      // 2. Legacy ImgBB deletion
       if (mediaItem.imgbbId && process.env.IMGBB_API_KEY) {
         try {
           await fetch(`https://api.imgbb.com/1/delete?key=${process.env.IMGBB_API_KEY}&id=${mediaItem.imgbbId}`, { method: 'POST' }).catch(() => {});
@@ -142,7 +169,6 @@ export async function DELETE(request: NextRequest) {
       }
     }
 
-    // Cloud/Sync Delete (removes from Firestore/RTDB)
     await storage.deleteMedia(filename);
 
     return NextResponse.json({ success: true });

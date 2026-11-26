@@ -1,92 +1,75 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
-import { Home, ShoppingBag, ShoppingCart, User, Info } from "lucide-react";
+import { Home, Store, ShoppingBag, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCart } from "@/lib/cart";
 import { useAuth } from "@/contexts/AuthContext";
-
-const navItems = [
-  { label: "Home",   icon: Home,        href: "/" },
-  { label: "Shop",   icon: ShoppingBag, href: "/shop" },
-  { label: "Cart",   icon: ShoppingCart,href: "/cart" },
-  { label: "Account",icon: User,        href: "/account" },
-  { label: "About",   icon: Info,        href: "/about" },
-];
 
 export default function MobileNav() {
   const pathname  = usePathname();
   const { items } = useCart();
   const { user }  = useAuth();
-  const [mounted, setMounted] = React.useState(false);
+  const [mounted, setMounted] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     setMounted(true);
   }, []);
 
   const cartCount = mounted ? items.reduce((sum, item) => sum + item.quantity, 0) : 0;
 
-  // Build items, updating the Account href based on auth state
-  const resolvedItems = navItems.map(item =>
-    item.label === "Account"
-      ? { ...item, href: mounted && user ? "/account" : "/login" }
-      : item
-  );
+  const tabs = [
+    { label: "Home", icon: Home, href: "/", active: pathname === "/" },
+    { label: "Shop", icon: Store, href: "/shop", active: pathname.startsWith("/shop") },
+    { label: "Cart", icon: ShoppingBag, href: "/cart", active: pathname === "/cart", badge: cartCount },
+    {
+      label: "Account",
+      icon: User,
+      href: mounted && user ? "/account" : "/login",
+      active: pathname.startsWith("/account") || pathname === "/login" || pathname === "/register",
+    },
+  ];
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-[500] md:hidden">
-      {/* Docked Bar */}
-      <div className="relative border-t border-gray-100 bg-white/80 backdrop-blur-3xl shadow-[0_-4px_20px_rgba(0,0,0,0.05)] pb-safe">
-        <div className="flex items-center justify-around h-[62px] px-2 max-w-md mx-auto">
-          {resolvedItems.map((item) => {
-            const isActive = pathname === item.href && item.href !== "#";
-            const Icon = item.icon;
-
-
-
-            return (
-              <Link
-                key={item.label}
-                href={item.href}
-                className="relative flex flex-col items-center gap-0.5 w-12 tap-target"
-                style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "44px" }}
+    <nav
+      aria-label="Mobile Navigation"
+      className="fixed inset-x-0 bottom-0 z-[500] md:hidden border-t border-gray-200/80 bg-white/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_30px_-12px_rgba(0,0,0,0.18)]"
+    >
+      <div className="mx-auto grid max-w-lg grid-cols-4 h-[62px]">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <Link
+              key={tab.label}
+              href={tab.href}
+              className={cn(
+                "relative flex flex-col items-center justify-center gap-1 text-[9px] font-black uppercase tracking-wider transition-colors",
+                tab.active ? "text-black" : "text-gray-400 hover:text-gray-700"
+              )}
+            >
+              {tab.active && (
+                <span className="absolute top-0 h-0.5 w-8 rounded-full bg-black" />
+              )}
+              <span
+                className={cn(
+                  "relative w-9 h-7 rounded-full flex items-center justify-center transition-all",
+                  tab.active && "bg-gray-100"
+                )}
               >
-                <div
-                  className={cn(
-                    "relative p-2 rounded-2xl transition-all duration-300",
-                    isActive ? "text-black" : "text-gray-400"
-                  )}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="mobile-nav-pill"
-                      className="absolute inset-0 bg-black/8 rounded-2xl"
-                      transition={{ type: "spring", bounce: 0.25, duration: 0.5 }}
-                    />
-                  )}
-                  <Icon size={22} strokeWidth={isActive ? 2.5 : 2} />
-                  {item.label === "Cart" && cartCount > 0 && (
-                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 bg-black text-white text-[9px] font-black flex items-center justify-center rounded-full border-2 border-white px-0.5">
-                      {cartCount > 9 ? "9+" : cartCount}
-                    </span>
-                  )}
-                </div>
-                <span
-                  className={cn(
-                    "text-[9px] font-bold uppercase tracking-wide -mt-0.5 transition-colors",
-                    isActive ? "text-black" : "text-gray-400"
-                  )}
-                >
-                  {item.label}
-                </span>
-              </Link>
-            );
-          })}
-        </div>
+                <Icon size={19} strokeWidth={tab.active ? 2.6 : 2} />
+                {typeof tab.badge === "number" && tab.badge > 0 && (
+                  <span className="absolute -top-0.5 right-0 min-w-[15px] h-[15px] px-0.5 rounded-full bg-black text-white text-[8px] font-black flex items-center justify-center border border-white">
+                    {tab.badge > 9 ? "9+" : tab.badge}
+                  </span>
+                )}
+              </span>
+              {tab.label}
+            </Link>
+          );
+        })}
       </div>
-    </div>
+    </nav>
   );
 }

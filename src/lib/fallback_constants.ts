@@ -13,7 +13,7 @@ export const FALLBACK_SETTINGS = {
   "twitterUrl": "https://twitter.com",
   "instagramUrl": "https://instagram.com",
   "shortDescription": "Your premium destination for the latest in cutting-edge electronics and smart home devices.",
-  "logoUrl": "/uploads/1773837355475_cropped-logo-1773837355460.jpg",
+  "logoUrl": "/logo.png",
   "navLinks": [
     { "id": "1", "label": "Home", "href": "/" },
     { "id": "2", "label": "Shop", "href": "/shop" },

@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import { Search, Trash2, Users, Crown } from "lucide-react";
+import { Search, Trash2, Crown, X } from "lucide-react";
 import DeleteConfirmModal from "@/components/admin/DeleteConfirmModal";
+import AdminSelect from "@/components/admin/AdminSelect";
 import { useAuth } from "@/contexts/AuthContext";
 import { getUsers, updateUserRole, deleteUserAccount, getSuperAdminEmail } from "./actions";
 import PremiumLoader from "@/components/PremiumLoader";
@@ -25,18 +26,20 @@ const ROLE_OPTIONS = [
   { value: "customer", label: "Customer" },
 ];
 
+const FILTER_ROLE_OPTIONS = [{ value: "all", label: "All Roles" }, ...ROLE_OPTIONS];
+
 export default function CustomersPage() {
   const { user } = useAuth();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
-  
+
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [superAdminEmail, setSuperAdminEmail] = useState<string>("");
+  const [deleteTarget, setDeleteTarget] = useState<{ uid: string; name: string } | null>(null);
 
-  // The currently logged-in user is the super-admin if their email matches
   const isSuperAdmin = !!superAdminEmail && user?.email === superAdminEmail;
 
   useEffect(() => {
@@ -55,8 +58,7 @@ export default function CustomersPage() {
       setUsers(data as UserProfile[]);
       setSuperAdminEmail(saEmail);
     } catch (err: any) {
-      console.error("Load Users Error:", err);
-      toast.error(err.message || "Failed to load users. Are you sure you're an admin?");
+      toast.error(err.message || "Failed to load users");
     } finally {
       setLoading(false);
     }
@@ -66,17 +68,11 @@ export default function CustomersPage() {
     try {
       setUpdatingId(targetUid);
       const token = await user!.getIdToken();
-      
-      // Update role via server action
       await updateUserRole(targetUid, newRole, token);
-      
-      // Optimistic update
-      setUsers(prev => prev.map(u => u.uid === targetUid ? { ...u, role: newRole } : u));
-      toast.success("User role updated successfully.");
-      
-      // If we updated our own role, we should force refresh token
+      setUsers((prev) => prev.map((u) => (u.uid === targetUid ? { ...u, role: newRole } : u)));
+      toast.success("Role updated");
       if (targetUid === user?.uid) {
-        await user!.getIdToken(true); // Force refresh
+        await user!.getIdToken(true);
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to update role");
@@ -85,17 +81,14 @@ export default function CustomersPage() {
     }
   };
 
-  const [deleteTarget, setDeleteTarget] = useState<{ uid: string; name: string } | null>(null);
-
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
     try {
       setDeletingId(deleteTarget.uid);
       const token = await user!.getIdToken();
       await deleteUserAccount(deleteTarget.uid, token);
-      
-      setUsers(prev => prev.filter(u => u.uid !== deleteTarget.uid));
-      toast.success("User deleted permanently.");
+      setUsers((prev) => prev.filter((u) => u.uid !== deleteTarget.uid));
+      toast.success("User deleted");
       setDeleteTarget(null);
     } catch (err: any) {
       toast.error(err.message || "Failed to delete user");
@@ -104,8 +97,8 @@ export default function CustomersPage() {
     }
   }, [deleteTarget, user]);
 
-  const filteredUsers = users.filter(u => {
-    if (roleFilter !== "all" && u.role !== roleFilter) return false;
+  const filteredUsers = users.filter((u) => {
+    if (roleFilter !== "all" && (u.role || "customer") !== roleFilter) return false;
     if (search.trim()) {
       const s = search.toLowerCase();
       return u.email?.toLowerCase().includes(s) || u.displayName?.toLowerCase().includes(s);
@@ -118,203 +111,217 @@ export default function CustomersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Delete Confirmation Modal */}
+    <div className="space-y-4 w-full min-w-0 pb-12">
       <DeleteConfirmModal
         isOpen={!!deleteTarget}
         title="Delete User?"
         message={`Are you sure you want to permanently delete "${deleteTarget?.name}"? This action cannot be undone.`}
         isDeleting={!!deletingId}
         onConfirm={confirmDelete}
-        onCancel={() => { if (!deletingId) setDeleteTarget(null); }}
+        onCancel={() => {
+          if (!deletingId) setDeleteTarget(null);
+        }}
       />
 
-
-      {/* Filters */}
-      <div className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm flex flex-col sm:flex-row items-center gap-4">
-        <div className="relative flex-1 w-full flex items-center">
-          <Search size={16} className="absolute left-4 text-gray-400" />
+      {/* ── Single-Row Search & Custom Role Filter ── */}
+      <div className="bg-white rounded-2xl border border-gray-200/80 p-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+        <div className="relative flex-1 min-w-0">
+          <Search
+            size={15}
+            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+          />
           <input
             type="text"
-            placeholder="Search by name or email..."
+            placeholder="Search by name or email…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full h-11 pl-10 pr-4 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:border-black focus:ring-1 focus:ring-black transition-all"
+            className="w-full h-10 pl-9 pr-9 bg-gray-50 border border-gray-200/80 focus:bg-white focus:border-black rounded-xl text-sm text-gray-900 placeholder:text-gray-400 outline-none transition-colors"
           />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
-        <div className="w-full sm:w-48">
-          <select
+
+        <div className="w-full sm:w-44 shrink-0">
+          <AdminSelect
             value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-            className="w-full h-11 px-4 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-700 outline-none focus:border-black focus:ring-1 focus:ring-black transition-all appearance-none cursor-pointer"
-          >
-            <option value="all">All Roles</option>
-            {ROLE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-          </select>
+            onChange={setRoleFilter}
+            options={FILTER_ROLE_OPTIONS}
+            placeholder="All Roles"
+          />
         </div>
       </div>
 
-      {/* Table & Cards */}
-      <div className="space-y-4">
-        {/* Desktop Table View */}
-        <div className="hidden md:block bg-white border border-gray-100 rounded-3xl overflow-hidden shadow-sm">
-          <div className="overflow-x-auto w-full">
-            <table className="w-full text-left border-collapse min-w-[640px]">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider">
-                  <th className="px-6 py-4">User</th>
-                  <th className="px-6 py-4">Joined</th>
-                  <th className="px-6 py-4">Role</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredUsers.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-6 py-12 text-center text-gray-400 text-sm font-medium">
-                      No users found matching your filters.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredUsers.map((u) => (
-                    <tr key={u.uid} className="hover:bg-gray-50/50 transition-colors group">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
-                            <span className="font-bold text-gray-600">{(u.displayName || u.email || "?")[0].toUpperCase()}</span>
-                          </div>
-                          <div>
-                            <p className="font-bold text-gray-900 text-sm flex items-center gap-1.5">
-                              {u.displayName || "Unknown User"}
-                            {u.email === superAdminEmail && (
-                                <span title="Permanent Super-Admin"><Crown size={12} className="text-yellow-500" /></span>
-                              )}
-                            </p>
-                            <p className="text-xs text-gray-500">{u.email}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-xs font-medium text-gray-500">
-                        {new Date(u.createdAt).toLocaleDateString()}
-                      </td>
-                      <td className="px-6 py-4">
-                        <select
-                          disabled={
-                            updatingId === u.uid ||
-                            !isSuperAdmin ||           // only super-admin can change
-                            u.uid === user?.uid ||     // can't change own role
-                            u.email === superAdminEmail // super-admin row is locked
-                          }
-                          value={u.role || "customer"}
-                          onChange={(e) => handleRoleChange(u.uid, e.target.value)}
-                          className={cn(
-                            "h-8 pl-3 pr-8 rounded-lg text-xs font-bold transition-all outline-none border cursor-pointer appearance-none",
-                            u.role === "admin" ? "bg-black text-white border-black" :
-                            u.role === "shop_manager" ? "bg-blue-50 text-blue-700 border-blue-200" :
-                            u.role === "order_manager" ? "bg-purple-50 text-purple-700 border-purple-200" :
-                            "bg-gray-50 text-gray-600 border-gray-200",
-                            (updatingId === u.uid || !isSuperAdmin || u.uid === user?.uid || u.email === superAdminEmail) ? "opacity-50 cursor-not-allowed" : ""
-                          )}
-                        >
-                          {ROLE_OPTIONS.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => setDeleteTarget({ uid: u.uid, name: u.displayName || u.email })}
-                          disabled={deletingId === u.uid || u.uid === user?.uid}
-                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-block"
-                          title={u.uid === user?.uid ? "You cannot delete yourself" : "Delete user"}
-                        >
-                          {deletingId === u.uid ? (
-                            <PremiumSpinner size="sm" />
-                          ) : (
-                            <Trash2 size={16} />
-                          )}
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+      {/* ── Desktop CSS Grid (Overflow visible so role dropdowns never clip) ── */}
+      <div className="hidden md:block bg-white border border-gray-200/80 rounded-2xl w-full">
+        <div className="grid grid-cols-[minmax(0,1.8fr)_130px_170px_64px] items-center gap-4 px-5 py-3 bg-gray-50/70 border-b border-gray-100 rounded-t-2xl text-[11px] font-semibold text-gray-500">
+          <div>User</div>
+          <div>Joined</div>
+          <div>Role</div>
+          <div className="text-right">Actions</div>
         </div>
 
-        {/* Mobile Cards View */}
-        <div className="md:hidden space-y-4">
+        <div className="divide-y divide-gray-100">
           {filteredUsers.length === 0 ? (
-            <div className="bg-white p-12 rounded-3xl border border-gray-100 text-center text-gray-400 text-sm italic font-medium">
+            <div className="px-6 py-14 text-center text-gray-400 text-sm">
               No users found matching your filters.
             </div>
           ) : (
-            filteredUsers.map((u) => (
-              <div key={u.uid} className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm space-y-4">
+            filteredUsers.map((u, idx) => {
+              const roleLocked =
+                updatingId === u.uid ||
+                !isSuperAdmin ||
+                u.uid === user?.uid ||
+                u.email === superAdminEmail;
+              const isLast = idx === filteredUsers.length - 1;
+
+              return (
+                <div
+                  key={u.uid}
+                  className={cn(
+                    "grid grid-cols-[minmax(0,1.8fr)_130px_170px_64px] items-center gap-4 px-5 py-3.5 hover:bg-gray-50/50 transition-colors",
+                    isLast && "rounded-b-2xl"
+                  )}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-gray-100 text-gray-700 flex items-center justify-center shrink-0 text-xs font-bold">
+                      {(u.displayName || u.email || "?")[0].toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900 text-sm flex items-center gap-1.5 truncate">
+                        <span className="truncate">{u.displayName || "Unnamed User"}</span>
+                        {u.email === superAdminEmail && (
+                          <span title="Super Admin" className="shrink-0">
+                            <Crown size={13} className="text-amber-500" />
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">{u.email}</p>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-gray-500 tabular-nums">
+                    {new Date(u.createdAt).toLocaleDateString("en-GB", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </div>
+
+                  <div className="w-full max-w-[160px]">
+                    <AdminSelect
+                      size="sm"
+                      disabled={roleLocked}
+                      value={u.role || "customer"}
+                      onChange={(val) => handleRoleChange(u.uid, val)}
+                      options={ROLE_OPTIONS}
+                    />
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDeleteTarget({ uid: u.uid, name: u.displayName || u.email })
+                      }
+                      disabled={
+                        deletingId === u.uid ||
+                        u.uid === user?.uid ||
+                        u.email === superAdminEmail
+                      }
+                      className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 flex items-center justify-center transition-colors disabled:opacity-35 disabled:cursor-not-allowed cursor-pointer"
+                      title={u.uid === user?.uid ? "Cannot delete your own account" : "Delete user"}
+                    >
+                      {deletingId === u.uid ? <PremiumSpinner size="sm" /> : <Trash2 size={14} />}
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* ── Mobile Cards View ── */}
+      <div className="md:hidden space-y-3">
+        {filteredUsers.length === 0 ? (
+          <div className="bg-white p-10 rounded-2xl border border-gray-200/80 text-center text-gray-400 text-sm">
+            No users found.
+          </div>
+        ) : (
+          filteredUsers.map((u) => {
+            const roleLocked =
+              updatingId === u.uid ||
+              !isSuperAdmin ||
+              u.uid === user?.uid ||
+              u.email === superAdminEmail;
+
+            return (
+              <div
+                key={u.uid}
+                className="bg-white p-4 rounded-2xl border border-gray-200/80 space-y-3.5"
+              >
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-gray-50 text-gray-400 flex items-center justify-center font-black text-lg border border-gray-100">
+                  <div className="w-10 h-10 rounded-xl bg-gray-100 text-gray-700 flex items-center justify-center font-bold text-sm shrink-0">
                     {(u.displayName || u.email || "?")[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="font-black text-gray-900 text-sm flex items-center gap-1.5 truncate">
-                      {u.displayName || "Unknown User"}
+                    <p className="font-semibold text-gray-900 text-sm flex items-center gap-1.5 truncate">
+                      <span className="truncate">{u.displayName || "Unnamed User"}</span>
                       {u.email === superAdminEmail && (
-                        <Crown size={12} className="text-yellow-500" />
+                        <Crown size={12} className="text-amber-500 shrink-0" />
                       )}
                     </p>
-                    <p className="text-[10px] text-gray-500 truncate">{u.email}</p>
+                    <p className="text-xs text-gray-500 truncate">{u.email}</p>
                   </div>
                   <button
-                    onClick={() => setDeleteTarget({ uid: u.uid, name: u.displayName || u.email })}
-                    disabled={deletingId === u.uid || u.uid === user?.uid || u.email === superAdminEmail}
-                    className="w-10 h-10 bg-red-50 text-red-500 rounded-xl flex items-center justify-center disabled:opacity-30 transition-colors"
+                    type="button"
+                    onClick={() =>
+                      setDeleteTarget({ uid: u.uid, name: u.displayName || u.email })
+                    }
+                    disabled={
+                      deletingId === u.uid ||
+                      u.uid === user?.uid ||
+                      u.email === superAdminEmail
+                    }
+                    className="w-8 h-8 rounded-lg border border-gray-200 text-gray-400 hover:text-red-600 flex items-center justify-center disabled:opacity-35 cursor-pointer shrink-0"
                   >
-                    {deletingId === u.uid ? (
-                      <PremiumSpinner size="sm" />
-                    ) : (
-                      <Trash2 size={16} />
-                    )}
+                    {deletingId === u.uid ? <PremiumSpinner size="sm" /> : <Trash2 size={14} />}
                   </button>
                 </div>
-                
-                <div className="flex items-center justify-between pt-1">
-                  <div className="space-y-0.5">
-                    <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Joined Date</p>
-                    <p className="text-xs font-bold text-gray-700">{new Date(u.createdAt).toLocaleDateString("en-GB", { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+
+                <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-gray-100">
+                  <div>
+                    <p className="text-[10px] font-medium text-gray-400">Joined</p>
+                    <p className="text-xs font-semibold text-gray-700">
+                      {new Date(u.createdAt).toLocaleDateString("en-GB", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                      })}
+                    </p>
                   </div>
-                  
-                  <div className="text-right">
-                    <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mr-1">Access Role</p>
-                    <div className="relative inline-block mt-1">
-                      <select
-                        disabled={
-                          updatingId === u.uid ||
-                          !isSuperAdmin ||
-                          u.uid === user?.uid ||
-                          u.email === superAdminEmail
-                        }
-                        value={u.role || "customer"}
-                        onChange={(e) => handleRoleChange(u.uid, e.target.value)}
-                        className={cn(
-                          "h-9 pl-4 pr-10 rounded-xl text-[11px] font-black transition-all outline-none border appearance-none cursor-pointer",
-                          u.role === "admin" ? "bg-black text-white border-black" :
-                          u.role === "shop_manager" ? "bg-blue-50 text-blue-700 border-blue-200" :
-                          u.role === "order_manager" ? "bg-purple-50 text-purple-700 border-purple-200" :
-                          "bg-gray-50 text-gray-600 border-gray-200",
-                        )}
-                      >
-                        {ROLE_OPTIONS.map(opt => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </div>
+
+                  <div className="w-40">
+                    <AdminSelect
+                      size="sm"
+                      disabled={roleLocked}
+                      value={u.role || "customer"}
+                      onChange={(val) => handleRoleChange(u.uid, val)}
+                      options={ROLE_OPTIONS}
+                    />
                   </div>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            );
+          })
+        )}
       </div>
     </div>
   );

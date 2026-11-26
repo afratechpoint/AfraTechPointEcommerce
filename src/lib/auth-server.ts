@@ -1,4 +1,4 @@
-import { adminAuth } from "./firebase/admin";
+import { adminAuth, adminDb } from "./firebase/admin";
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
 
@@ -12,8 +12,33 @@ function getAdminEmails(): string[] {
 }
 
 /**
- * Verifies a Firebase ID token from the Authorization header and checks if the user is an admin.
- * @returns The decoded token if valid and user is admin, otherwise null.
+ * Single source of truth for "is this user an admin?".
+ * Must stay in sync with AuthContext on the client, which grants the admin UI
+ * based on the Firestore `role` OR the configured admin email. Otherwise a
+ * valid admin can open the panel but gets 401 from every admin API.
+ */
+export async function hasAdminAccess(decodedToken: any): Promise<boolean> {
+  if (!decodedToken?.email) return false;
+
+  // 1. Super-admin email configured in env
+  if (getAdminEmails().includes(decodedToken.email.toLowerCase())) return true;
+
+  // 2. Custom claim set by the admin panel
+  if (decodedToken.role === "admin") return true;
+
+  // 3. Firestore role (the same check the client uses)
+  try {
+    const snap = await adminDb.collection("users").doc(decodedToken.uid).get();
+    if (snap?.data()?.role === "admin") return true;
+  } catch (err) {
+    console.warn("[Auth] Firestore role check failed:", err);
+  }
+
+  return false;
+}
+
+/**
+ * Verifies a Firebase ID token from the Authorization header and checks admin access.
  */
 export async function verifyAdmin(request: NextRequest) {
   try {
@@ -26,15 +51,9 @@ export async function verifyAdmin(request: NextRequest) {
     if (!idToken) return null;
 
     const decodedToken = await adminAuth.verifyIdToken(idToken);
-    if (!decodedToken || !decodedToken.email) return null;
+    if (!decodedToken) return null;
 
-    // Check if email is in the admin list
-    const adminEmails = getAdminEmails();
-    if (adminEmails.includes(decodedToken.email.toLowerCase())) {
-      return decodedToken;
-    }
-
-    return null;
+    return (await hasAdminAccess(decodedToken)) ? decodedToken : null;
   } catch (error) {
     console.error("[Auth] Token verification failed:", error);
     return null;
@@ -64,16 +83,13 @@ export async function verifyUser(request: NextRequest) {
 export async function verifyAdminAction() {
   try {
     const h = await headers();
-    const adminEmails = getAdminEmails();
-    
+
     // 1. Try Authorization header first (works if client sends it)
     const authHeader = h.get("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       const idToken = authHeader.split("Bearer ")[1];
       const decodedToken = await adminAuth.verifyIdToken(idToken);
-      if (decodedToken.email && adminEmails.includes(decodedToken.email.toLowerCase())) {
-        return decodedToken;
-      }
+      if (await hasAdminAccess(decodedToken)) return decodedToken;
     }
 
     // 2. Fallback: Try cookie-based session
@@ -82,9 +98,7 @@ export async function verifyAdminAction() {
     const sessionCookie = cookieStore.get("__session")?.value || cookieStore.get("session")?.value;
     if (sessionCookie) {
       const decodedToken = await adminAuth.verifyIdToken(sessionCookie);
-      if (decodedToken.email && adminEmails.includes(decodedToken.email.toLowerCase())) {
-        return decodedToken;
-      }
+      if (await hasAdminAccess(decodedToken)) return decodedToken;
     }
 
     // 3. Fallback: Check cookie header manually for Firebase token
@@ -92,9 +106,7 @@ export async function verifyAdminAction() {
     const firebaseTokenMatch = cookieHeader.match(/firebaseIdToken=([^;]+)/);
     if (firebaseTokenMatch) {
       const decodedToken = await adminAuth.verifyIdToken(firebaseTokenMatch[1]);
-      if (decodedToken.email && adminEmails.includes(decodedToken.email.toLowerCase())) {
-        return decodedToken;
-      }
+      if (await hasAdminAccess(decodedToken)) return decodedToken;
     }
 
     return null;

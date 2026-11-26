@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 
+// Always render the shop on demand so category/pricing changes and layout
+// fixes aren't stuck in a cached static payload.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "All Products & Gadgets | Afra Tech Point",
   description:

@@ -4,10 +4,12 @@
 // Fetches products in the same category and displays them as
 // clickable cards below the main product content.
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Product } from "../types";
+import { useRealtime } from "@/lib/realtime-client";
+import { isProductOutOfStock } from "@/lib/inventory";
 
 interface RelatedProductsProps {
   currentProductId: string;
@@ -23,23 +25,29 @@ export default function RelatedProducts({
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    // Fetch all products then filter client-side by category
-    fetch("/api/products")
+  const fetchRelated = useCallback(() => {
+    fetch("/api/products", { cache: "no-store" })
       .then((r) => r.json())
       .then((all: Product[]) => {
+        if (!Array.isArray(all)) return;
         const related = all
           .filter(
             (p) =>
               p.id !== currentProductId &&
               p.category?.toLowerCase() === category?.toLowerCase()
           )
-          .slice(0, 6); // Max 6 related products
+          .slice(0, 6);
         setProducts(related);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [currentProductId, category]);
+
+  useEffect(() => {
+    fetchRelated();
+  }, [fetchRelated]);
+
+  useRealtime("products", fetchRelated);
 
   // Don't render the section if no related products found
   if (!loading && products.length === 0) return null;
@@ -74,6 +82,7 @@ export default function RelatedProducts({
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
           {products.map((p, i) => {
             const price = p.salePrice ?? p.regularPrice ?? p.price ?? 0;
+            const outOfStock = isProductOutOfStock(p as any);
             return (
               <motion.div
                 key={p.id}
@@ -86,20 +95,23 @@ export default function RelatedProducts({
                   className="group block space-y-3"
                 >
                   {/* Product image */}
-                  <div className="aspect-square bg-gray-50 rounded-2xl overflow-hidden border border-gray-100 relative">
+                  <div className="aspect-square bg-gray-100 rounded-2xl overflow-hidden border border-gray-100 relative">
                     {p.image && (
                       <img
                         src={p.image}
                         alt={p.name}
-                        className="w-full h-full object-contain p-4 transition-transform duration-500 group-hover:scale-110"
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                       />
                     )}
-                    {/* Sale badge */}
-                    {p.salePrice && p.regularPrice && (
+                    {outOfStock ? (
+                      <span className="absolute top-2 left-2 px-2 py-0.5 bg-red-600 text-white rounded text-[8px] font-bold uppercase">
+                        Stock Out
+                      </span>
+                    ) : p.salePrice && p.regularPrice ? (
                       <span className="absolute top-2 left-2 px-2 py-0.5 bg-black text-white rounded text-[7px] font-bold uppercase">
                         {Math.round((1 - p.salePrice / p.regularPrice) * 100)}% OFF
                       </span>
-                    )}
+                    ) : null}
                   </div>
 
                   {/* Name + price */}

@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowUpRight, ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { useSettings } from "@/components/SettingsProvider";
 
 interface Banner {
   id: string;
@@ -21,158 +22,174 @@ interface HeroSliderProps {
 }
 
 export default function HeroSlider({ banners }: HeroSliderProps) {
-  const [currentSlide, setCurrentSlide] = useState(0);
+  const settings = useSettings();
+  const liveBanners: Banner[] =
+    Array.isArray(settings?.banners) && settings.banners.length > 0
+      ? (settings.banners as any)
+      : banners;
 
-  const slides = banners.map((b, i) => ({
+  const [currentSlide, setCurrentSlide] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+  const touchStartX = useRef<number | null>(null);
+
+  const slides = liveBanners.map((b, i) => ({
+    id: b.id || String(i),
     title: b.title,
-    description: b.description || b.subtitle || "",
+    description: (b.description || b.subtitle || "").replace(/\s*\n+\s*/g, " ").trim(),
     image: b.imageUrl,
-    linkUrl: b.linkUrl,
-    color: ["bg-[#f8f9fa]", "bg-white", "bg-[#f0f2f5]"][i % 3],
+    linkUrl: b.linkUrl || "/shop",
   }));
 
-  const nextSlide = () => setCurrentSlide((prev) => (prev + 1) % slides.length);
-  const prevSlide = () =>
-    setCurrentSlide((prev) => (prev - 1 + slides.length) % slides.length);
-
-  React.useEffect(() => {
+  const nextSlide = useCallback(() => {
     if (slides.length <= 1) return;
+    setCurrentSlide((prev) => (prev + 1) % slides.length);
+  }, [slides.length]);
+
+  const prevSlide = useCallback(() => {
+    if (slides.length <= 1) return;
+    setCurrentSlide((prev) => (prev - 1 + slides.length) % slides.length);
+  }, [slides.length]);
+
+  useEffect(() => {
+    if (slides.length <= 1 || isPaused) return;
     const timer = setInterval(nextSlide, 5000);
     return () => clearInterval(timer);
-  }, [currentSlide, slides.length]);
+  }, [currentSlide, slides.length, isPaused, nextSlide]);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+    setIsPaused(true);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current !== null && slides.length > 1) {
+      const delta = e.changedTouches[0].clientX - touchStartX.current;
+      if (Math.abs(delta) > 45) {
+        if (delta < 0) nextSlide();
+        else prevSlide();
+      }
+    }
+    touchStartX.current = null;
+    setIsPaused(false);
+  };
 
   if (slides.length === 0) return null;
 
   const slide = slides[currentSlide];
 
   return (
-    <div className="relative mt-2">
-      <div className="relative h-[460px] md:h-[500px] w-full overflow-hidden rounded-2xl md:rounded-[2.5rem] border border-gray-100 shadow-xl">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentSlide}
-            initial={{ opacity: 0, x: 100 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -100 }}
-            transition={{ duration: 0.6, ease: "easeInOut" }}
-            className={cn(
-              "absolute inset-0 p-4 md:p-20 flex flex-col justify-center overflow-hidden",
-              slide.color
-            )}
-          >
-            {/* Overlay for mobile readability */}
-            <div className="absolute inset-0 bg-white/10 md:bg-transparent md:hidden pointer-events-none z-[1]" />
-
-            {/* Hero Image */}
+    <div
+      className="w-full bg-white border-b border-gray-100 select-none"
+      onMouseEnter={() => setIsPaused(true)}
+      onMouseLeave={() => setIsPaused(false)}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      <div className="w-full max-w-[1800px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12">
+        {/* Slide Content */}
+        <div className="min-h-[420px] md:min-h-0 md:h-[400px] lg:h-[430px] flex items-center py-6 md:py-8">
+          <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              initial={{ opacity: 0, scale: 0.8, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              transition={{ duration: 0.8, delay: 0.2, type: "spring" }}
-              className="relative md:absolute md:inset-y-0 md:right-0 w-full md:w-1/2 flex items-center justify-center md:justify-end pr-0 md:pr-12 lg:pr-32 z-0 mt-2 md:mt-0"
+              key={slide.id}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.28, ease: "easeOut" }}
+              className="w-full grid grid-cols-1 md:grid-cols-12 items-center gap-6 md:gap-10 lg:gap-16"
             >
-              {slide.linkUrl ? (
-                <Link
-                  href={slide.linkUrl}
-                  className="pointer-events-auto block relative w-[180px] h-[180px] sm:w-[220px] sm:h-[220px] md:w-[380px] md:h-[380px]"
-                >
-                  <Image
-                    src={`${slide.image}${slide.image.includes('?') ? '&' : '?'}tr=w-800,f-auto,q-80`}
-                    alt={`${slide.title} - Hero Image`}
-                    fill
-                    unoptimized={true}
-                    loading={currentSlide === 0 ? "eager" : "lazy"}
-                    fetchPriority={currentSlide === 0 ? "high" : "low"}
-                    sizes="(max-width: 768px) 100vw, 50vw"
-                    className="object-contain drop-shadow-[0_45px_45px_rgba(0,0,0,0.15)] md:hover:scale-105 transition-transform duration-1000 cursor-pointer"
-                  />
-                </Link>
-              ) : (
-                <div className="relative w-[180px] h-[180px] sm:w-[220px] sm:h-[220px] md:w-[380px] md:h-[380px]">
-                  <Image
-                    src={`${slide.image}${slide.image.includes('?') ? '&' : '?'}tr=w-800,f-auto,q-80`}
-                    alt={`${slide.title} - Hero Image`}
-                    fill
-                    unoptimized={true}
-                    loading={currentSlide === 0 ? "eager" : "lazy"}
-                    fetchPriority={currentSlide === 0 ? "high" : "low"}
-                    sizes="(max-width: 768px) 100vw, 50vw"
-                    className="object-contain drop-shadow-[0_45px_45px_rgba(0,0,0,0.15)] md:hover:scale-105 transition-transform duration-1000"
-                  />
-                </div>
-              )}
-            </motion.div>
+              {/* Left: Text & Actions */}
+              <div className="order-2 md:order-1 md:col-span-7 flex flex-col items-center md:items-start text-center md:text-left">
+                <h2 className="text-2xl sm:text-3xl md:text-[34px] lg:text-[40px] font-bold text-gray-900 leading-[1.2] tracking-tight line-clamp-2 max-w-xl">
+                  {slide.title}
+                </h2>
 
-            {/* Text Content */}
-            <div className="z-10 relative w-full md:max-w-2xl px-2 flex flex-col items-center md:items-start text-center md:text-left pb-8 md:pb-0">
-              <motion.h1
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4 }}
-                className="text-lg md:text-2xl lg:text-3xl font-black leading-tight tracking-tight text-gray-900 mb-2 md:mb-6 uppercase"
-              >
-                {slide.title}
-              </motion.h1>
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.5 }}
-                className="flex flex-col md:flex-row items-center md:items-start gap-4"
-              >
-                <div className="max-w-[480px]">
-                  <p className="text-[10px] md:text-sm text-gray-500 leading-relaxed font-bold line-clamp-2 md:line-clamp-none">
+                {slide.description && (
+                  <p className="mt-3 text-sm md:text-[15px] text-gray-500 leading-relaxed max-w-lg line-clamp-2 md:line-clamp-3">
                     {slide.description}
                   </p>
+                )}
+
+                <div className="mt-6 flex flex-wrap items-center gap-3 justify-center md:justify-start">
+                  <Link
+                    href={slide.linkUrl}
+                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-black text-white text-xs sm:text-sm font-semibold hover:bg-gray-800 transition-colors active:scale-[0.98]"
+                  >
+                    Shop Now <ArrowRight size={15} />
+                  </Link>
+                  <Link
+                    href="/shop"
+                    className="inline-flex items-center px-5 py-3 rounded-xl border border-gray-200 text-gray-700 text-xs sm:text-sm font-semibold hover:bg-gray-50 hover:border-gray-300 transition-colors active:scale-[0.98]"
+                  >
+                    Browse Store
+                  </Link>
                 </div>
-              </motion.div>
+              </div>
+
+              {/* Right: Clean Rounded Image */}
+              <div className="order-1 md:order-2 md:col-span-5 flex justify-center md:justify-end">
+                <Link
+                  href={slide.linkUrl}
+                  aria-label={slide.title}
+                  className="relative block aspect-square w-full max-w-[210px] sm:max-w-[250px] md:max-w-[320px] lg:max-w-[360px] rounded-2xl overflow-hidden bg-gray-50 border border-gray-100"
+                >
+                  <Image
+                    src={`${slide.image}${slide.image.includes("?") ? "&" : "?"}tr=w-900,f-auto,q-85`}
+                    alt={slide.title}
+                    fill
+                    unoptimized={true}
+                    loading={currentSlide === 0 ? "eager" : "lazy"}
+                    fetchPriority={currentSlide === 0 ? "high" : "low"}
+                    sizes="(max-width: 640px) 60vw, (max-width: 1024px) 38vw, 360px"
+                    className="object-cover transition-transform duration-500 hover:scale-[1.03]"
+                  />
+                </Link>
+              </div>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        {/* Simple Bottom Controls (No Overlap) */}
+        {slides.length > 1 && (
+          <div className="flex items-center justify-between pb-5 md:pb-6">
+            {/* Minimal Dots */}
+            <div className="flex items-center gap-2">
+              {slides.map((s, i) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setCurrentSlide(i)}
+                  aria-label={`Slide ${i + 1}`}
+                  className={cn(
+                    "h-1.5 rounded-full transition-all duration-300 cursor-pointer",
+                    currentSlide === i
+                      ? "w-6 bg-gray-900"
+                      : "w-1.5 bg-gray-300 hover:bg-gray-400"
+                  )}
+                />
+              ))}
             </div>
-          </motion.div>
-        </AnimatePresence>
 
-        {/* Navigation Arrows */}
-        <div className="absolute bottom-4 right-4 md:bottom-12 md:right-12 z-20 flex gap-2 md:gap-4">
-          <button
-            onClick={prevSlide}
-            aria-label="Previous Slide"
-            className="w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/80 backdrop-blur-md border border-gray-100 flex items-center justify-center hover:bg-black hover:text-white transition-all shadow-lg shadow-black/5"
-          >
-            <ArrowLeft size={18} className="md:hidden" aria-hidden="true" />
-            <ArrowUpRight
-              size={20}
-              className="-rotate-[135deg] hidden md:block"
-              aria-hidden="true"
-            />
-          </button>
-          <button
-            onClick={nextSlide}
-            aria-label="Next Slide"
-            className="w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/80 backdrop-blur-md border border-gray-100 flex items-center justify-center hover:bg-black hover:text-white transition-all shadow-lg shadow-black/5"
-          >
-            <ArrowRight size={18} className="md:hidden" aria-hidden="true" />
-            <ArrowUpRight
-              size={20}
-              className="rotate-45 hidden md:block"
-              aria-hidden="true"
-            />
-          </button>
-        </div>
-
-        {/* Pagination Dots */}
-        <div className="absolute bottom-8 left-8 md:bottom-12 md:left-12 z-20 flex gap-2 md:gap-3">
-          {slides.map((_, i) => (
-            <button
-              key={i}
-              onClick={() => setCurrentSlide(i)}
-              aria-label={`Go to slide ${i + 1}`}
-              aria-current={currentSlide === i ? "true" : "false"}
-              className={cn(
-                "h-1 md:h-1.5 transition-all duration-500 rounded-full",
-                currentSlide === i
-                  ? "w-8 md:w-12 bg-black"
-                  : "w-4 md:w-6 bg-black/20"
-              )}
-            />
-          ))}
-        </div>
+            {/* Clean Prev / Next Buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={prevSlide}
+                aria-label="Previous slide"
+                className="w-9 h-9 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-gray-900 hover:text-gray-900 transition-colors flex items-center justify-center active:scale-95 cursor-pointer"
+              >
+                <ChevronLeft size={17} />
+              </button>
+              <button
+                type="button"
+                onClick={nextSlide}
+                aria-label="Next slide"
+                className="w-9 h-9 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-gray-900 hover:text-gray-900 transition-colors flex items-center justify-center active:scale-95 cursor-pointer"
+              >
+                <ChevronRight size={17} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -5,10 +5,11 @@
 // quantity picker, and the "About this item" summary.
 // Delegates cart button to AddToCartButton for separation of concerns.
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Star, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getAvailableStock, isProductOutOfStock } from "@/lib/inventory";
 import { Product, Variant } from "../types";
 import AddToCartButton from "./AddToCartButton";
 
@@ -38,6 +39,22 @@ export default function ProductInfo({
   currencySymbol = "৳",
 }: ProductInfoProps) {
   const hasVariants = Boolean(product.variants && product.variants.length > 0);
+  const customFields = product.virtualType === "social"
+    ? (product.virtualConfig?.customFields || [])
+    : [];
+  const [customValues, setCustomValues] = useState<Record<string, string>>({});
+
+  const availableStock = getAvailableStock(product as any, selectedVariant?.name || null);
+  const outOfStock =
+    hasVariants && !selectedVariant
+      ? isProductOutOfStock(product as any)
+      : isProductOutOfStock(product as any, selectedVariant?.name || null);
+
+  useEffect(() => {
+    if (availableStock !== null && availableStock > 0 && quantity > availableStock) {
+      onQuantityChange(availableStock);
+    }
+  }, [availableStock, quantity, onQuantityChange]);
 
   return (
     <motion.div
@@ -48,10 +65,18 @@ export default function ProductInfo({
       {/* ── Header: category badge + rating + name + price ── */}
       <div className="mb-3 md:mb-4 lg:mb-6">
         {/* Badges row */}
-        <div className="flex items-center gap-2 mb-2 md:mb-3">
+        <div className="flex flex-wrap items-center gap-2 mb-2 md:mb-3">
           <span className="px-3 py-1 bg-black text-white rounded-full text-[8px] md:text-[9px] font-bold uppercase tracking-widest">
             {product.category}
           </span>
+          {product.productKind === "virtual" && (
+            <span className="px-3 py-1 bg-violet-100 text-violet-700 rounded-full text-[8px] md:text-[9px] font-black uppercase tracking-widest">
+              {product.virtualType === "social" ? "Page URL required" :
+               product.virtualType === "account" ? "Account delivery" :
+               product.virtualType === "license" ? "License key" :
+               product.virtualType === "software" ? "Digital download" : "Virtual"}
+            </span>
+          )}
           <div className="flex items-center gap-1.5 px-3 py-1 bg-gray-50 rounded-full border border-gray-100">
             <Star size={10} className="text-black fill-current" />
             <span className="text-[8px] md:text-[9px] font-bold text-black">
@@ -63,6 +88,22 @@ export default function ProductInfo({
               ({product.reviewCount} reviews)
             </span>
           )}
+          <span
+            className={cn(
+              "px-2.5 py-1 rounded-full text-[8px] md:text-[9px] font-bold uppercase tracking-wider border",
+              outOfStock
+                ? "bg-red-50 text-red-600 border-red-200"
+                : availableStock !== null && availableStock <= 5
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+            )}
+          >
+            {outOfStock
+              ? "Stock Out"
+              : availableStock !== null && availableStock <= 5
+              ? `Only ${availableStock} left`
+              : "In Stock"}
+          </span>
         </div>
 
         {/* Product name */}
@@ -83,27 +124,37 @@ export default function ProductInfo({
         {/* Variant selector */}
         {hasVariants && (
           <div className="space-y-2 pb-3 md:pb-4 border-b border-gray-100">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap justify-between items-center gap-1.5">
               <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Select Variant</p>
-              <span className="text-[8px] md:text-[9px] font-bold text-black bg-white px-2 py-1 rounded-md border border-gray-100">
+              <span className="text-[8px] md:text-[9px] font-bold text-black bg-white px-2 py-1 rounded-md border border-gray-100 max-w-full truncate">
                 Selected: {selectedVariant ? selectedVariant.name : "Choose an option"}
               </span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {product.variants!.map((v) => (
-                <button
-                  key={v.id}
-                  onClick={() => onVariantChange(v)}
-                  className={cn(
-                    "px-4 md:px-5 py-2 rounded-xl text-[8px] md:text-[9px] font-bold uppercase tracking-widest transition-all",
-                    selectedVariant?.id === v.id
-                      ? "bg-black text-white shadow-sm scale-105"
-                      : "bg-white text-gray-500 hover:text-black hover:border-black border border-gray-100"
-                  )}
-                >
-                  {v.name}
-                </button>
-              ))}
+              {product.variants!.map((v) => {
+                const variantOut = isProductOutOfStock(product as any, v.name);
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={variantOut}
+                    onClick={() => {
+                      if (!variantOut) onVariantChange(v);
+                    }}
+                    className={cn(
+                      "px-4 md:px-5 py-2 rounded-xl text-[8px] md:text-[9px] font-bold uppercase tracking-widest transition-all",
+                      variantOut
+                        ? "bg-gray-100 text-gray-400 border border-gray-200/70 cursor-not-allowed"
+                        : selectedVariant?.id === v.id
+                        ? "bg-black text-white shadow-sm scale-105"
+                        : "bg-white text-gray-500 hover:text-black hover:border-black border border-gray-100"
+                    )}
+                  >
+                    {v.name}
+                    {variantOut ? " · Stock Out" : ""}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -121,8 +172,16 @@ export default function ProductInfo({
               </button>
               <span className="w-6 md:w-8 text-center font-black text-[10px] md:text-[11px]">{quantity}</span>
               <button
-                onClick={() => onQuantityChange(Math.min(quantity + 1, product.stock ?? 99))}
-                className="w-6 h-6 flex items-center justify-center text-gray-500 hover:bg-gray-50 hover:text-black rounded-md transition-all"
+                onClick={() =>
+                  onQuantityChange(
+                    Math.min(
+                      quantity + 1,
+                      availableStock !== null ? Math.max(1, availableStock) : 99
+                    )
+                  )
+                }
+                disabled={outOfStock || (availableStock !== null && quantity >= availableStock)}
+                className="w-6 h-6 flex items-center justify-center text-gray-500 hover:bg-gray-50 hover:text-black rounded-md transition-all disabled:opacity-30"
               >
                 <Plus size={12} />
               </button>
@@ -130,11 +189,36 @@ export default function ProductInfo({
           </div>
           <div className="text-right">
             <p className="text-[7px] md:text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1.5">Subtotal</p>
-            <p className="text-sm md:text-base font-black text-black">
-              {currencySymbol}{(activePrice * quantity).toFixed(2)}
-            </p>
+            {hasVariants && !selectedVariant ? (
+              <p className="text-sm md:text-base font-bold text-gray-300">—</p>
+            ) : (
+              <p className="text-sm md:text-base font-black text-black">
+                {currencySymbol}{(activePrice * quantity).toFixed(2)}
+              </p>
+            )}
           </div>
         </div>
+
+        {/* Admin-defined required fields for Social Growth products */}
+        {customFields.length > 0 && (
+          <div className="space-y-2 pb-3 md:pb-4 border-b border-gray-100">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">Required details</p>
+            {customFields.map((field) => (
+              <div key={field.id} className="space-y-1">
+                <label className="text-[9px] font-black uppercase tracking-widest text-gray-600">
+                  {field.label} <span className="text-red-500">*</span>
+                </label>
+                <input
+                  value={customValues[field.id] || ""}
+                  onChange={(e) => setCustomValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                  placeholder={field.placeholder}
+                  required
+                  className="w-full h-10 px-3 rounded-xl bg-white border border-gray-200 outline-none text-xs font-medium focus:border-gray-900 transition-all"
+                />
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Cart + Buy Now buttons */}
         <AddToCartButton
@@ -146,6 +230,12 @@ export default function ProductInfo({
           hasVariants={hasVariants}
           quantity={quantity}
           currencySymbol={currencySymbol}
+          productKind={product.productKind}
+          virtualType={product.virtualType}
+          customFields={customFields}
+          customFieldValues={customValues}
+          isOutOfStock={outOfStock}
+          maxStock={availableStock}
         />
       </div>
 
