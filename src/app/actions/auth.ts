@@ -1,74 +1,44 @@
 "use server";
 
-import { adminDb } from "@/lib/firebase/admin";
-import { FieldValue } from "firebase-admin/firestore";
-import { dispatchWelcomeEmail } from "./email";
-import { createNotificationInFirestore } from "@/lib/firebase/server_firestore";
+import { verifyIdTokenString } from "@/lib/auth-server";
+import { syncVerifiedUserRecord } from "@/lib/auth-sync";
+import { logSecurityEvent } from "@/lib/security/audit-log";
 
-export async function syncUserToFirestore(uid: string, email: string, displayName: string, photoURL?: string) {
+/**
+ * Authenticated Server Action to sync the currently signed-in user's profile.
+ * Derives `uid` and `email` strictly from the verified Firebase ID token —
+ * never trusts client-supplied `uid`, `email`, or `role`.
+ */
+export async function syncUserToFirestore(
+  idToken: string,
+  displayName?: string,
+  photoURL?: string
+) {
   try {
-    const userRef = adminDb.collection("users").doc(uid);
-    const snap = await userRef.get();
-    
-    const baseData = {
-      email,
-      lastLogin: FieldValue.serverTimestamp()
-    };
-
-    // Construct update data, only taking photo and name if they are defined
-    const updateData: any = { ...baseData };
-    if (displayName) updateData.displayName = displayName;
-    if (photoURL) updateData.photoURL = photoURL;
-
-    if (!snap.exists) {
-      await userRef.set({
-        ...updateData,
-        uid,
-        role: "customer",
-        createdAt: FieldValue.serverTimestamp()
+    const decoded = await verifyIdTokenString(idToken);
+    if (!decoded?.uid) {
+      await logSecurityEvent({
+        action: "auth.sync_user",
+        severity: "warn",
+        outcome: "denied",
+        reason: "Missing or invalid Firebase ID token on syncUserToFirestore",
       });
-      
-      // Notify admin of new user (non-blocking)
-      createNotificationInFirestore({
-        type: "new_user",
-        title: "New User Registered",
-        message: `${displayName || "A new user"} (${email}) just created an account.`,
-        recipient: "admin",
-        link: `/admin/customers`,
-      }).catch(console.error);
-
-      // Customer welcome in-app notification
-      createNotificationInFirestore({
-        type: "welcome",
-        title: "Welcome to Afra Tech Point!",
-        message: `Hello ${displayName || "there"}, welcome to Afra Tech Point! Explore our latest products and deals.`,
-        recipient: uid,
-        link: `/shop`,
-      }).catch(console.error);
-
-      // Dispatch Welcome Email
-      if (email) {
-        dispatchWelcomeEmail(email, displayName || "Customer").catch(console.error);
-      }
-    } else {
-      // Always update display name and photo from Google if available
-      await userRef.update(updateData);
+      return { success: false, error: "Unauthorized" };
     }
-    
-    // Fetch the final data to return to the client
-    const finalSnap = await userRef.get();
-    const finalData = finalSnap.data();
 
-    return { 
-      success: true, 
-      userData: {
-        displayName: finalData?.displayName || "",
-        photoURL: finalData?.photoURL || "",
-        role: finalData?.role || "customer"
-      }
+    const userData = await syncVerifiedUserRecord(
+      decoded.uid,
+      decoded.email || "",
+      displayName || decoded.name || "",
+      photoURL || decoded.picture || ""
+    );
+
+    return {
+      success: true,
+      userData,
     };
   } catch (error: any) {
-    console.error("Admin syncUserToFirestore error:", error);
-    return { success: false, error: error.message };
+    console.error("[syncUserToFirestore] Failed:", error?.message);
+    return { success: false, error: "Failed to sync account." };
   }
 }

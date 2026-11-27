@@ -6,11 +6,12 @@ const lanOrigins = Object.values(os.networkInterfaces())
   .filter((iface) => iface && iface.family === "IPv4" && !iface.internal)
   .map((iface) => iface.address);
 
-let nextConfig = {
+const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  productionBrowserSourceMaps: false,
 
-  // Allow any active LAN IP on this machine to load /_next/* assets on other devices
+  // Allow any active LAN IP on this machine to load /_next/* assets on other devices in local dev
   allowedDevOrigins: Array.from(new Set(["192.168.10.62", ...lanOrigins])),
 
   // ── Compiler Optimizations ────────────────────────────────────────────
@@ -22,40 +23,40 @@ let nextConfig = {
   async headers() {
     const isProd = process.env.NODE_ENV === "production";
 
-    // Security headers applied to every page/route
     const securityHeaders = [
-      // Prevent browsers from MIME-sniffing (stops content injection attacks)
       { key: "X-Content-Type-Options", value: "nosniff" },
-      // Block site from being embedded in iframes (Clickjacking protection)
       { key: "X-Frame-Options", value: "SAMEORIGIN" },
-      // Stop leaking referrer info to third-party sites
       { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-      // Disable old dangerous browser features
-      { key: "X-XSS-Protection", value: "1; mode=block" },
-      // Force HTTPS for 2 years (HSTS) — production only (breaks plain-HTTP LAN access in dev)
+      { key: "X-DNS-Prefetch-Control", value: "on" },
       ...(isProd
-        ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }]
+        ? [
+            {
+              key: "Strict-Transport-Security",
+              value: "max-age=63072000; includeSubDomains; preload",
+            },
+          ]
         : []),
-      // Disable dangerous browser APIs (camera, mic, geolocation, etc.)
-      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
-      // Allow popup interactions (fixes Firebase Google Sign-In on strict platforms)
+      {
+        key: "Permissions-Policy",
+        value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()",
+      },
+      // Required for Firebase Google OAuth popup sign-in flow
       { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
-      // Content Security Policy — production only. In dev it breaks plain-HTTP
-      // LAN access (`upgrade-insecure-requests` forces all assets to https://)
-      // and blocks Turbopack's ws:// HMR socket.
       ...(isProd
         ? [
             {
               key: "Content-Security-Policy",
               value: [
                 "default-src 'self'",
-                // Firebase, fonts, images from trusted sources
-                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com https://apis.google.com",
+                // Next.js hydration + Firebase SDKs (no 'unsafe-eval' in production)
+                "script-src 'self' 'unsafe-inline' https://www.gstatic.com https://apis.google.com",
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-                "font-src 'self' https://fonts.gstatic.com",
+                "font-src 'self' data: https://fonts.gstatic.com",
                 "img-src 'self' data: blob: https://i.ibb.co https://i.ibb.co.com https://images.unsplash.com https://firebasestorage.googleapis.com https://*.googleusercontent.com https://ik.imagekit.io https://afratechpoint.shop",
                 "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com wss://*.firebaseio.com",
-                "frame-src https://accounts.google.com https://*.firebaseapp.com",
+                "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com",
+                "worker-src 'self' blob:",
+                "frame-ancestors 'self'",
                 "object-src 'none'",
                 "base-uri 'self'",
                 "form-action 'self'",
@@ -68,36 +69,46 @@ let nextConfig = {
 
     return [
       {
-        // Apply security headers to all routes
         source: "/:path*",
         headers: securityHeaders,
       },
       {
-        // Static assets: 1 year immutable in production, never in dev
+        // Never allow shared proxies/CDNs to cache private Admin or Customer Account routes
+        source: "/admin/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate" },
+        ],
+      },
+      {
+        source: "/account/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate" },
+        ],
+      },
+      {
+        source: "/checkout/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate" },
+        ],
+      },
+      {
         source: "/_next/static/:path*",
         headers: [
           {
             key: "Cache-Control",
-            value:
-              process.env.NODE_ENV === "production"
-                ? "public, max-age=31536000, immutable"
-                : "no-store, no-cache, must-revalidate",
+            value: isProd
+              ? "public, max-age=31536000, immutable"
+              : "no-store, no-cache, must-revalidate",
           },
         ],
       },
       {
-        // Fonts & icons: 1 year
         source: "/fonts/:path*",
-        headers: [
-          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
-        ],
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
       },
       {
-        // API routes: no caching (dynamic data)
         source: "/api/:path*",
-        headers: [
-          { key: "Cache-Control", value: "no-store, no-cache, must-revalidate" },
-        ],
+        headers: [{ key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate" }],
       },
     ];
   },
@@ -106,16 +117,19 @@ let nextConfig = {
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "i.ibb.co" },
+      { protocol: "https", hostname: "i.ibb.co.com" },
       { protocol: "https", hostname: "images.unsplash.com" },
       { protocol: "https", hostname: "firebasestorage.googleapis.com" },
       { protocol: "https", hostname: "*.googleusercontent.com" },
       { protocol: "https", hostname: "ik.imagekit.io" },
     ],
-    formats: ["image/avif", "image/webp"],   // Serve AVIF first (40% smaller than WebP)
-    minimumCacheTTL: 2592000,                // 30 day image cache (was 7 days)
-    deviceSizes: [390, 768, 1280, 1440],     // Match real device breakpoints only
-    imageSizes: [64, 128, 256, 384],         // Thumbnail sizes
+    formats: ["image/avif", "image/webp"],
+    minimumCacheTTL: 2592000,
+    deviceSizes: [390, 768, 1280, 1440],
+    imageSizes: [64, 128, 256, 384],
     dangerouslyAllowSVG: false,
+    contentDispositionType: "attachment",
+    contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
   },
 
   // ── Bundle Optimizations ──────────────────────────────────────────────
@@ -130,7 +144,6 @@ let nextConfig = {
     ],
   },
 
-  // ── Dev Indicator Cleanup ─────────────────────────────────────────────
   devIndicators: false,
 };
 

@@ -561,14 +561,20 @@ export default function VirtualOrderFulfillPanel({
               <div className="space-y-2">
                 {order.fulfillment?.targetUrl && (
                   <div className="flex items-center justify-between gap-2 bg-gray-50 rounded-xl px-3.5 py-2.5 border border-gray-100">
-                    <a
-                      href={order.fulfillment.targetUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs font-semibold text-gray-900 hover:underline break-all inline-flex items-center gap-1.5"
-                    >
-                      {order.fulfillment.targetUrl} <ExternalLink size={12} className="shrink-0" />
-                    </a>
+                    {/^https?:\/\//i.test(order.fulfillment.targetUrl) ? (
+                      <a
+                        href={order.fulfillment.targetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-semibold text-gray-900 hover:underline break-all inline-flex items-center gap-1.5"
+                      >
+                        {order.fulfillment.targetUrl} <ExternalLink size={12} className="shrink-0" />
+                      </a>
+                    ) : (
+                      <span className="text-xs font-semibold text-gray-900 break-all">
+                        {order.fulfillment.targetUrl}
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => copyHelper(order.fulfillment!.targetUrl!, "Link")}

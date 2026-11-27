@@ -9,6 +9,7 @@ import SettingsProvider from "@/components/SettingsProvider";
 import { THEMES, ThemeId } from "@/lib/themes";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { getAppUrl } from "@/lib/app-url";
+import { safeJsonLdStringify } from "@/lib/security/validation";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -169,7 +170,7 @@ export default function RootLayout({
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
-            __html: JSON.stringify([
+            __html: safeJsonLdStringify([
               {
                 "@context": "https://schema.org",
                 "@type": "WebSite",

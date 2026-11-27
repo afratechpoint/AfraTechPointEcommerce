@@ -1,8 +1,8 @@
 // src/lib/courier/steadfast.ts
-// Service layer for interacting with the Steadfast Courier API.
+// Server-only service layer for interacting with the Steadfast Courier API.
 // Documented at: https://portal.packzy.com/api/v1
 
-const BASE_URL = 'https://portal.packzy.com/api/v1';
+const BASE_URL = "https://portal.packzy.com/api/v1";
 
 export interface SteadfastOrder {
   invoice: string;
@@ -28,65 +28,75 @@ export interface SteadfastResponse {
 }
 
 export const steadfast = {
+  isConfigured(): boolean {
+    return Boolean(
+      process.env.STEADFAST_API_KEY?.trim() && process.env.STEADFAST_SECRET_KEY?.trim()
+    );
+  },
+
   getHeaders() {
     return {
-      'Api-Key': process.env.STEADFAST_API_KEY || '',
-      'Secret-Key': process.env.STEADFAST_SECRET_KEY || '',
-      'Content-Type': 'application/json',
+      "Api-Key": (process.env.STEADFAST_API_KEY || "").trim(),
+      "Secret-Key": (process.env.STEADFAST_SECRET_KEY || "").trim(),
+      "Content-Type": "application/json",
     };
   },
 
   async createOrder(data: SteadfastOrder): Promise<SteadfastResponse> {
-    try {
-      const response = await fetch(`${BASE_URL}/create_order`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(data),
-      });
-
-      const result = await response.json();
-      return result;
-    } catch (error) {
-      console.error('[Steadfast] createOrder error:', error);
-      throw error;
+    if (!this.isConfigured()) {
+      throw new Error("Steadfast API credentials are not configured.");
     }
+    const response = await fetch(`${BASE_URL}/create_order`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify(data),
+      signal: AbortSignal.timeout(12000),
+    });
+
+    return await response.json();
   },
 
   async getStatusById(id: string | number): Promise<any> {
-    try {
-      const response = await fetch(`${BASE_URL}/status_by_cid/${id}`, {
-        method: 'GET',
+    if (!this.isConfigured()) {
+      throw new Error("Steadfast API credentials are not configured.");
+    }
+    const safeId = String(id).trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(safeId)) {
+      throw new Error("Invalid consignment identifier.");
+    }
+
+    const response = await fetch(
+      `${BASE_URL}/status_by_cid/${encodeURIComponent(safeId)}`,
+      {
+        method: "GET",
         headers: this.getHeaders(),
-      });
-      return await response.json();
-    } catch (error) {
-      console.error('[Steadfast] getStatus error:', error);
-      throw error;
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    return await response.json();
+  },
+
+  async checkFraud(phone: string): Promise<any> {
+    if (!this.isConfigured()) {
+      throw new Error("Steadfast API credentials are not configured.");
+    }
+    const cleanPhone = phone.replace(/\D/g, "").slice(-11);
+    if (!/^01\d{9}$/.test(cleanPhone)) {
+      throw new Error("Invalid Bangladesh mobile number.");
+    }
+
+    const url = `${BASE_URL}/fraud_check/${encodeURIComponent(cleanPhone)}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: this.getHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { status: 500, message: "Invalid response from courier service" };
     }
   },
-  
-  async checkFraud(phone: string): Promise<any> {
-    try {
-      const cleanPhone = phone.replace(/\D/g, '').slice(-11);
-      const url = `${BASE_URL}/fraud_check/${cleanPhone}`;
-      console.log(`[Steadfast Debug] Sending Fraud Check to: ${url}`);
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      });
-
-      const text = await response.text();
-      console.log(`[Steadfast Debug] Raw Response:`, text);
-
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        return { status: 500, message: "Response is not valid JSON", raw: text };
-      }
-    } catch (error: any) {
-      console.error('[Steadfast] checkFraud error:', error);
-      throw error;
-    }
-  }
 };

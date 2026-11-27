@@ -1,52 +1,97 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { adminAuth } from "@/lib/firebase/admin";
+import { verifyAdmin, verifyUser } from "@/lib/auth-server";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { EmailVerificationEmail } from "@/emails/renderers/index";
 import { buildAppUrl } from "@/lib/app-url";
+import { checkRateLimit } from "@/lib/security/rate-limit";
+import { getClientIp, logSecurityEvent } from "@/lib/security/audit-log";
 
-export async function POST(req: Request) {
+const sendVerificationSchema = z.object({
+  email: z.string().trim().email().max(200),
+  displayName: z.string().trim().max(100).optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+
   try {
-    const { email, displayName } = await req.json();
+    // Require authenticated user (requesting verification for their own email) or admin
+    const adminCaller = await verifyAdmin(req);
+    const userCaller = !adminCaller ? await verifyUser(req) : null;
 
-    if (!email) {
-      return NextResponse.json({ error: "Email is required" }, { status: 400 });
+    if (!adminCaller && !userCaller) {
+      await logSecurityEvent({
+        action: "auth.send_verification",
+        severity: "warn",
+        ip,
+        outcome: "denied",
+        reason: "Unauthenticated verification email request rejected",
+      });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 1. Generate an email verification link from Firebase Admin 
-    // This creates an OOB code for email verification
-    const firebaseLink = await adminAuth.generateEmailVerificationLink(email);
+    const rl = await checkRateLimit({
+      bucket: "send_verification",
+      identifier: (adminCaller || userCaller)!.uid,
+      limit: 3,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Too many verification emails requested. Please wait before trying again." },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } }
+      );
+    }
 
-    // 2. Extract the 'oobCode'
+    const rawBody = await req.json();
+    const parsed = sendVerificationSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Valid email is required" }, { status: 400 });
+    }
+
+    const cleanEmail = parsed.data.email.toLowerCase();
+
+    if (!adminCaller && userCaller?.email?.trim().toLowerCase() !== cleanEmail) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const firebaseLink = await adminAuth.generateEmailVerificationLink(cleanEmail);
     const url = new URL(firebaseLink);
     const oobCode = url.searchParams.get("oobCode");
 
-    // 3. Build our branded URL on the canonical public domain.
-    // getAppUrl() never emits localhost from a deployed app.
     if (!oobCode) {
-      throw new Error("Firebase did not return a verification code.");
+      throw new Error("Missing oobCode");
     }
+
     const verificationLink = buildAppUrl(
       `/verify-email?oobCode=${encodeURIComponent(oobCode)}`
     );
 
-    // 4. Send the branded email
     const result = await sendEmail({
-      to: email,
+      to: cleanEmail,
       subject: "Activate your Afra Tech Point account",
       template: EmailVerificationEmail,
-      props: { 
-        customerName: displayName || "Customer", 
-        verificationLink 
-      }
+      props: {
+        customerName: parsed.data.displayName || "Customer",
+        verificationLink,
+      },
     });
 
-    if (result.success) {
-      return NextResponse.json({ success: true, message: "Verification link sent!" });
-    } else {
-      return NextResponse.json({ error: "Failed to send verification email" }, { status: 500 });
+    if (!result.success) {
+      return NextResponse.json(
+        { error: "Failed to send verification email." },
+        { status: 500 }
+      );
     }
+
+    return NextResponse.json({ success: true, message: "Verification link sent!" });
   } catch (err: any) {
-    console.error("Verification Email API Error:", err);
-    return NextResponse.json({ error: err.message || "Failed to process request" }, { status: 500 });
+    console.error("[Send Verification API] Error:", err?.code || err?.message);
+    return NextResponse.json(
+      { error: "Failed to process verification request." },
+      { status: 500 }
+    );
   }
 }

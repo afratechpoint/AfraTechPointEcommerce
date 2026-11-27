@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, Check, X, Wand2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authenticatedFetch } from "@/lib/api-helper";
 
 interface SpellIssue {
   id: string;
@@ -32,8 +33,22 @@ export function setSpellCheckEnabled(enabled: boolean) {
 
 function isCheckableElement(el: Element | null): el is HTMLInputElement | HTMLTextAreaElement {
   if (!el) return false;
+  if (el.hasAttribute("data-no-spellcheck") || el.classList.contains("font-mono")) {
+    return false;
+  }
   if (el instanceof HTMLTextAreaElement) {
-    return !el.readOnly && !el.disabled;
+    if (el.readOnly || el.disabled) return false;
+    const ph = (el.placeholder || "").toLowerCase();
+    // Never send license key or account credential pools to external spell-checking
+    if (
+      ph.includes("xxxx") ||
+      ph.includes("password") ||
+      ph.includes("email:") ||
+      ph.includes("license")
+    ) {
+      return false;
+    }
+    return true;
   }
   if (el instanceof HTMLInputElement) {
     const type = (el.type || "text").toLowerCase();
@@ -169,7 +184,7 @@ export default function AdminSpellChecker() {
 
       setIsChecking(true);
       try {
-        const res = await fetch("/api/admin/spellcheck", {
+        const res = await authenticatedFetch("/api/admin/spellcheck", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

@@ -1,27 +1,49 @@
-import fs from 'fs/promises';
-import path from 'path';
+import fs from "fs/promises";
+import path from "path";
 
-const dataDir = path.join(process.cwd(), 'data');
-export const productsFile = path.join(dataDir, 'products.json');
-export const ordersFile = path.join(dataDir, 'orders.json');
-export const settingsFile = path.join(dataDir, 'settings.json');
-export const profilesFile = path.join(dataDir, 'profiles.json');
+export const productsFile = "products.json";
+export const ordersFile = "orders.json";
+export const settingsFile = "settings.json";
+export const profilesFile = "profiles.json";
 
-export async function readData(filePath: string, defaultVal: any = []) {
+const ALLOWED_DATA_FILES = new Set([
+  productsFile,
+  ordersFile,
+  settingsFile,
+  profilesFile,
+]);
+
+function resolveFilePath(fileOrName: string): string {
+  if (path.isAbsolute(fileOrName)) return fileOrName;
+  const safeName = path.basename(fileOrName);
+  if (!ALLOWED_DATA_FILES.has(safeName)) {
+    throw new Error(`Disallowed local data file access: ${safeName}`);
+  }
+  const customDir = process.env.AFRA_DATA_DIR;
+  if (customDir) {
+    return path.join(/*turbopackIgnore: true*/ customDir, safeName);
+  }
+  return path.join(process.cwd(), "data", safeName);
+}
+
+export async function readData(fileOrName: string, defaultVal: any = []) {
+  const filePath = resolveFilePath(fileOrName);
   try {
-    const data = await fs.readFile(filePath, 'utf-8');
+    const data = await fs.readFile(filePath, "utf-8");
     return JSON.parse(data);
   } catch (error: any) {
-    console.error(`[DB Error] Failed to read ${filePath}:`, error.message);
-    // Attach error to return value for debug visibility if it's an array
+    if (error?.code !== "ENOENT") {
+      console.error(`[DB Error] Failed to read ${filePath}:`, error.message);
+    }
     if (Array.isArray(defaultVal)) {
-       return [];
+      return [];
     }
     return defaultVal;
   }
 }
 
-export async function writeData(filePath: string, data: any) {
+export async function writeData(fileOrName: string, data: any) {
+  const filePath = resolveFilePath(fileOrName);
   try {
     const dir = path.dirname(filePath);
     try {
@@ -31,8 +53,6 @@ export async function writeData(filePath: string, data: any) {
     }
     await fs.writeFile(filePath, JSON.stringify(data, null, 2));
   } catch (error: any) {
-    // Vercel's serverless filesystem is read-only. Firestore is the source of truth in production,
-    // so a failed local-JSON mirror write must never crash the request.
     console.error(`[DB Error] Failed to write ${filePath}:`, error.message);
     if (!process.env.VERCEL) throw error;
   }

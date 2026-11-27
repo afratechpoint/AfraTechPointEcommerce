@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { render } from "@react-email/render";
+import { sanitizeHeaderValue } from "@/lib/security/validation";
 
 interface SendEmailParams {
   to: string | string[];
@@ -10,69 +11,68 @@ interface SendEmailParams {
 }
 
 /**
- * Common utility to send responsive HTML emails safely wrapped over NodeMailer's SMTP.
- * Make sure process.env variables are structured properly.
+ * Sends responsive HTML emails over SMTP with strict TLS certificate validation,
+ * header-injection sanitization, and local file/URL access disabled.
  */
 export async function sendEmail({
   to,
   subject,
   template,
   props,
-  from = process.env.SMTP_FROM || `"Afra Tech Point" <${process.env.SMTP_USER}>`
+  from = process.env.SMTP_FROM || `"Afra Tech Point" <${process.env.SMTP_USER}>`,
 }: SendEmailParams) {
-  
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.warn("sendEmail: Missing SMTP configurations (HOST, USER, or PASS). Aborting.");
-    return { success: false, error: "Missing SMTP configuration" };
+    console.warn("[Email] Missing SMTP configuration (SMTP_HOST/SMTP_USER/SMTP_PASS).");
+    return { success: false, error: "Email service unavailable" };
   }
 
   const port = Number(process.env.SMTP_PORT) || 587;
-  // If port is 465, it usually must be secure (true). If 587, it usually must be false (STARTTLS).
   const isPort465 = port === 465;
-  const secure = process.env.SMTP_SECURE === "true" || (process.env.SMTP_SECURE === undefined && isPort465);
+  const secure =
+    process.env.SMTP_SECURE === "true" ||
+    (process.env.SMTP_SECURE === undefined && isPort465);
 
   const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: port,
-    secure: secure,
+    host: process.env.SMTP_HOST.trim(),
+    port,
+    secure,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-    // Adding timeout and TLS options for better reliability
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 10000,
     tls: {
-      // Do not fail on invalid certs (common with some SMTP providers)
-      rejectUnauthorized: false
-    }
+      // Enforce valid TLS certificates against MITM credential interception
+      rejectUnauthorized: process.env.SMTP_ALLOW_INSECURE_TLS !== "true",
+      servername: process.env.SMTP_HOST.trim(),
+    },
   });
 
   try {
-    // 1. Render template
     const html = await render(template(props || {}));
+    const safeRecipients = (Array.isArray(to) ? to : [to])
+      .map((addr) => sanitizeHeaderValue(addr, 254))
+      .filter(Boolean);
 
-    // 2. Prepare options
-    const mailOptions = {
-      from,
-      to: Array.isArray(to) ? to.join(", ") : to,
-      subject,
+    if (safeRecipients.length === 0) {
+      return { success: false, error: "Invalid recipient address" };
+    }
+
+    const info = await transporter.sendMail({
+      from: sanitizeHeaderValue(from, 254),
+      to: safeRecipients.join(", "),
+      subject: sanitizeHeaderValue(subject, 200),
       html,
-    };
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    });
 
-    // 3. Send
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent: ${info.messageId} (Recipient: ${mailOptions.to})`);
     return { success: true, messageId: info.messageId };
   } catch (error: any) {
-    console.error("FATAL SMTP ERROR:", {
-      message: error.message,
-      code: error.code,
-      command: error.command,
-      response: error.response,
-      stack: error.stack
-    });
-    throw new Error(`Email failed: ${error.message}${error.code ? ` (${error.code})` : ''}`);
+    // Log error code only — never log raw SMTP transcripts or credentials
+    console.error("[SMTP] Delivery error:", error?.code || "SEND_FAILED");
+    throw new Error("Email delivery failed");
   }
 }

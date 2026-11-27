@@ -1,111 +1,177 @@
-import { verifyAdmin } from '@/lib/auth-server';
-import { NextRequest, NextResponse } from 'next/server';
-import { storage } from '@/lib/storage';
-import path from 'path';
+import { verifyAdmin, verifyCatalogStaff } from "@/lib/auth-server";
+import { NextRequest, NextResponse } from "next/server";
+import { storage } from "@/lib/storage";
+import { detectSafeImageMagicBytes } from "@/lib/security/file-validation";
+import { checkRateLimit } from "@/lib/security/rate-limit";
+import { getClientIp, logSecurityEvent } from "@/lib/security/audit-log";
+import path from "path";
 
-// ImageKit configuration (env overrides keep the key out of source when set).
-const IMAGEKIT_PUBLIC_KEY  = process.env.IMAGEKIT_PUBLIC_KEY || "public_q6EAh8AgOv6qeEBIe6xLUlWF2XI=";
-const IMAGEKIT_PRIVATE_KEY = process.env.IMAGEKIT_PRIVATE_KEY || "private_/bOCaYv2iR0Z83fl32njT2mo+B4=";
-const IMAGEKIT_ENDPOINT    = process.env.IMAGEKIT_ENDPOINT || "https://ik.imagekit.io/afratechpoint";
-const MAX_FILE_BYTES       = 10 * 1024 * 1024; // ImageKit per-file limit
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const MAX_FILES_PER_REQUEST = 10;
 
-const getImageKitAuthHeader = () => 'Basic ' + Buffer.from(IMAGEKIT_PRIVATE_KEY + ':').toString('base64');
+function getImageKitConfig() {
+  const publicKey = (process.env.IMAGEKIT_PUBLIC_KEY || "").trim();
+  const privateKey = (process.env.IMAGEKIT_PRIVATE_KEY || "").trim();
+  const endpoint = (
+    process.env.IMAGEKIT_ENDPOINT || "https://ik.imagekit.io/afratechpoint"
+  ).trim();
+  return { publicKey, privateKey, endpoint };
+}
 
-function safeFileName(name: string) {
-  const ext = path.extname(name).toLowerCase();
-  const base = path.basename(name, ext)
+function safeBaseFileName(name: string, verifiedExt: string) {
+  const rawExt = path.extname(name);
+  const base = path
+    .basename(name, rawExt)
     .normalize("NFKD")
     .replace(/[^\w.-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${base || "image"}${ext}`;
-}
-
-function errorMessage(error: any): string {
-  return error?.message || error?.error?.message || error?.error || "Upload failed";
+  return `${base || "image"}${verifiedExt}`;
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const adminToken = await verifyAdmin(request);
-    if (!adminToken) {
+    const staffCaller = await verifyCatalogStaff(request);
+    if (!staffCaller) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const searchParams = request.nextUrl.searchParams;
-    const sync = searchParams.get('sync') === 'true';
+    const sync = searchParams.get("sync") === "true";
 
     if (sync) {
-      await storage.syncMediaWithImageKit({
-        publicKey: IMAGEKIT_PUBLIC_KEY,
-        privateKey: IMAGEKIT_PRIVATE_KEY,
-        endpoint: IMAGEKIT_ENDPOINT
-      });
+      const adminOnly = await verifyAdmin(request);
+      if (!adminOnly) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      const cfg = getImageKitConfig();
+      if (!cfg.privateKey) {
+        return NextResponse.json(
+          { error: "ImageKit credentials are not configured on the server." },
+          { status: 503 }
+        );
+      }
+      await storage.syncMediaWithImageKit(cfg);
     }
 
     const media = await storage.getMedia();
     return NextResponse.json(media || []);
   } catch (error: any) {
-    return NextResponse.json({ error: errorMessage(error) || 'Failed to list files' }, { status: 500 });
+    console.error("[Upload GET] Error:", error?.message);
+    return NextResponse.json({ error: "Failed to list media files" }, { status: 500 });
   }
 }
 
-// POST: Upload one or more files to ImageKit.io
 export async function POST(request: NextRequest) {
+  const ip = getClientIp(request);
+
   try {
-    const adminToken = await verifyAdmin(request);
-    if (!adminToken) {
+    const staffCaller = await verifyCatalogStaff(request, { checkRevoked: true });
+    if (!staffCaller) {
+      await logSecurityEvent({
+        action: "media.upload",
+        severity: "high",
+        ip,
+        outcome: "denied",
+        reason: "Unauthorized file upload attempt",
+      });
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const formData = await request.formData();
-    const files = formData.getAll('files').filter((f): f is File => typeof f !== 'string' && f.size > 0);
-
-    if (!files.length) {
-      return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+    const rl = await checkRateLimit({
+      bucket: "media_upload",
+      identifier: staffCaller.uid,
+      limit: 30,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Upload rate limit exceeded. Please wait before uploading more files." },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } }
+      );
     }
 
+    const { privateKey } = getImageKitConfig();
+    if (!privateKey) {
+      return NextResponse.json(
+        { error: "Media upload service is not configured (missing IMAGEKIT_PRIVATE_KEY)." },
+        { status: 503 }
+      );
+    }
+
+    const formData = await request.formData();
+    const files = formData
+      .getAll("files")
+      .filter((f): f is File => typeof f !== "string" && f.size > 0);
+
+    if (!files.length) {
+      return NextResponse.json({ error: "No files provided" }, { status: 400 });
+    }
+
+    if (files.length > MAX_FILES_PER_REQUEST) {
+      return NextResponse.json(
+        { error: `Maximum ${MAX_FILES_PER_REQUEST} files allowed per upload.` },
+        { status: 400 }
+      );
+    }
+
+    const authHeader = "Basic " + Buffer.from(privateKey + ":").toString("base64");
     const uploaded: { name: string; url: string }[] = [];
     const failed: { name: string; error: string }[] = [];
 
-    // Each file is handled independently: one bad file no longer aborts the
-    // whole batch, and the client gets the real reason for each failure.
     for (const file of files) {
       try {
         if (file.size > MAX_FILE_BYTES) {
-          throw new Error(`"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB. ImageKit allows up to 10 MB per file.`);
+          throw new Error("File exceeds the 10 MB maximum size limit.");
         }
 
-        const contentType = file.type || 'application/octet-stream';
-        if (!contentType.startsWith('image/')) {
-          throw new Error(`"${file.name}" is not a supported image file.`);
-        }
-
-        const fileName = safeFileName(file.name);
         const buffer = Buffer.from(await file.arrayBuffer());
 
-        const ikFormData = new FormData();
-        // Preserve the MIME type — omitting it makes ImageKit reject some formats.
-        ikFormData.append('file', new Blob([buffer], { type: contentType }), fileName);
-        ikFormData.append('fileName', fileName);
-        ikFormData.append('useUniqueFileName', 'true');
-        ikFormData.append('folder', '/products');
+        // Inspect actual binary magic bytes — blocks SVG/HTML/XML/script spoofing
+        const verifiedImage = detectSafeImageMagicBytes(buffer);
+        if (!verifiedImage) {
+          await logSecurityEvent({
+            action: "media.unsafe_file_rejected",
+            severity: "high",
+            actorUid: staffCaller.uid,
+            actorEmail: staffCaller.email || null,
+            ip,
+            outcome: "denied",
+            reason: "Rejected upload failing binary raster magic-byte check (e.g. SVG/HTML/spoof)",
+            metadata: { originalName: file.name, declaredType: file.type },
+          });
+          throw new Error(
+            "Unsupported or unsafe file format. Only JPEG, PNG, WebP, GIF, and AVIF images are allowed."
+          );
+        }
 
-        const ikResponse = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
-          method: 'POST',
-          headers: { 'Authorization': getImageKitAuthHeader() },
+        const fileName = safeBaseFileName(file.name, verifiedImage.extension);
+        const ikFormData = new FormData();
+        const uint8 = new Uint8Array(buffer);
+        ikFormData.append(
+          "file",
+          new Blob([uint8], { type: verifiedImage.mimeType }),
+          fileName
+        );
+        ikFormData.append("fileName", fileName);
+        ikFormData.append("useUniqueFileName", "true");
+        ikFormData.append("folder", "/products");
+
+        const ikResponse = await fetch("https://upload.imagekit.io/api/v1/files/upload", {
+          method: "POST",
+          headers: { Authorization: authHeader },
           body: ikFormData,
+          signal: AbortSignal.timeout(25000),
         });
 
         let ikData: any = {};
-        try { ikData = await ikResponse.json(); } catch { /* non-JSON error */ }
+        try {
+          ikData = await ikResponse.json();
+        } catch {}
 
-        if (!ikResponse.ok) {
-          throw new Error(ikData?.message || ikData?.error?.message || `ImageKit rejected the file (HTTP ${ikResponse.status}).`);
-        }
-        if (!ikData.url) {
-          throw new Error('ImageKit did not return a file URL.');
+        if (!ikResponse.ok || !ikData.url) {
+          throw new Error("Upstream media storage rejected the image.");
         }
 
         await storage.saveMedia({
@@ -113,15 +179,30 @@ export async function POST(request: NextRequest) {
           url: ikData.url,
           size: file.size,
           deleteUrl: ikData.fileId,
-          imgbbId: '',
-          uploadedAt: new Date().toISOString()
+          imgbbId: "",
+          uploadedAt: new Date().toISOString(),
         });
 
         uploaded.push({ name: ikData.name || fileName, url: ikData.url });
       } catch (error: any) {
-        console.error(`[Upload] Failed for "${file.name}":`, error);
-        failed.push({ name: file.name, error: errorMessage(error) });
+        failed.push({
+          name: String(file.name || "file").slice(0, 80),
+          error: error?.message || "Upload failed",
+        });
       }
+    }
+
+    if (uploaded.length > 0) {
+      await logSecurityEvent({
+        action: "media.uploaded",
+        severity: "info",
+        actorUid: staffCaller.uid,
+        actorEmail: staffCaller.email || null,
+        actorRole: staffCaller.resolvedRole,
+        ip,
+        outcome: "allowed",
+        metadata: { count: uploaded.length },
+      });
     }
 
     return NextResponse.json(
@@ -129,51 +210,92 @@ export async function POST(request: NextRequest) {
       { status: failed.length === files.length ? 400 : 200 }
     );
   } catch (error: any) {
-    console.error('Master Upload error:', error);
-    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
+    console.error("[Upload POST] Error:", error?.message);
+    return NextResponse.json({ error: "Upload processing failed" }, { status: 500 });
   }
 }
 
-// DELETE: Remove from ImageKit & sync
 export async function DELETE(request: NextRequest) {
+  const ip = getClientIp(request);
   try {
-    const adminToken = await verifyAdmin(request);
+    const adminToken = await verifyAdmin(request, { checkRevoked: true });
     if (!adminToken) {
+      await logSecurityEvent({
+        action: "media.delete",
+        severity: "high",
+        ip,
+        outcome: "denied",
+        reason: "Unauthorized media deletion attempt",
+      });
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { filename } = await request.json();
-    if (!filename) return NextResponse.json({ error: 'No filename provided' }, { status: 400 });
+    const body = await request.json();
+    const filename = typeof body?.filename === "string" ? body.filename.trim() : "";
+    if (!filename || filename.length > 200) {
+      return NextResponse.json({ error: "Valid filename is required" }, { status: 400 });
+    }
 
     const mediaList = await storage.getMedia();
     const mediaItem = mediaList.find((m: any) => m.name === filename);
+    const { privateKey } = getImageKitConfig();
 
     if (mediaItem) {
-      // 1. ImageKit file (deleteUrl stores the fileId)
-      if (mediaItem.deleteUrl && !mediaItem.deleteUrl.startsWith('media/')) {
+      if (
+        privateKey &&
+        mediaItem.deleteUrl &&
+        !String(mediaItem.deleteUrl).startsWith("media/") &&
+        /^[A-Za-z0-9_-]{4,128}$/.test(String(mediaItem.deleteUrl))
+      ) {
         try {
-          await fetch(`https://api.imagekit.io/v1/files/${mediaItem.deleteUrl}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': getImageKitAuthHeader() },
-          });
-        } catch (e) {
-          console.warn(`[ImageKit] Deletion failed for ${mediaItem.deleteUrl}`, e);
-        }
+          const authHeader = "Basic " + Buffer.from(privateKey + ":").toString("base64");
+          await fetch(
+            `https://api.imagekit.io/v1/files/${encodeURIComponent(String(mediaItem.deleteUrl))}`,
+            {
+              method: "DELETE",
+              headers: { Authorization: authHeader },
+              signal: AbortSignal.timeout(10000),
+            }
+          );
+        } catch {}
       }
 
-      // 2. Legacy ImgBB deletion
-      if (mediaItem.imgbbId && process.env.IMGBB_API_KEY) {
+      if (
+        mediaItem.imgbbId &&
+        process.env.IMGBB_API_KEY &&
+        /^[A-Za-z0-9_-]{4,64}$/.test(String(mediaItem.imgbbId))
+      ) {
         try {
-          await fetch(`https://api.imgbb.com/1/delete?key=${process.env.IMGBB_API_KEY}&id=${mediaItem.imgbbId}`, { method: 'POST' }).catch(() => {});
-        } catch (e) {}
+          const form = new URLSearchParams({
+            key: process.env.IMGBB_API_KEY,
+            id: String(mediaItem.imgbbId),
+          });
+          await fetch("https://api.imgbb.com/1/delete", {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(10000),
+          }).catch(() => {});
+        } catch {}
       }
     }
 
     await storage.deleteMedia(filename);
 
+    await logSecurityEvent({
+      action: "media.deleted",
+      severity: "info",
+      actorUid: adminToken.uid,
+      actorEmail: adminToken.email || null,
+      actorRole: "admin",
+      ip,
+      targetType: "media",
+      targetId: filename,
+      outcome: "allowed",
+    });
+
     return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Master Delete error:', error);
-    return NextResponse.json({ error: 'Failed to delete file' }, { status: 500 });
+  } catch (error: any) {
+    console.error("[Upload DELETE] Error:", error?.message);
+    return NextResponse.json({ error: "Failed to delete file" }, { status: 500 });
   }
 }

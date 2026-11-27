@@ -1,0 +1,380 @@
+rules_version = '2';
+
+// ===============================================================
+// Afra Tech Point — Cloud Firestore Security Rules
+// ===============================================================
+//
+// Assumed Data Model & Security Architecture:
+//
+// 1. Collection: users/{userId}
+//    - Document ID: Firebase Auth UID
+//    - Fields:
+//      * uid: string (immutable, matches userId)
+//      * email: string (immutable, lowercase user email — PII)
+//      * role: string (immutable from client; enum: 'admin' | 'shop_manager' | 'order_manager' | 'customer')
+//      * displayName: string (optional, 0..100 chars)
+//      * phone: string (optional, empty or 11 digits — PII)
+//      * address: string (optional, 0..300 chars — PII)
+//      * division: string (optional, 0..60 chars)
+//      * district: string (optional, 0..60 chars)
+//      * upazila: string (optional, 0..80 chars)
+//      * bio: string (optional, 0..500 chars)
+//      * photoURL: string (optional, 0..1024 chars, http/https URL)
+//      * createdAt: timestamp (immutable, server-set)
+//      * lastLogin: timestamp (immutable from client, server-set)
+//      * updatedAt: timestamp (optional, must equal request.time when updated)
+//    - Access: Created via verified server sync (`syncUserToFirestore`). Owner or admin can read single doc;
+//      only admin can list; owner can update strictly non-privileged profile fields; admin can delete other non-super-admin users.
+//
+// 2. Collection: products/{productId}
+//    - Document ID: Auto-generated product ID
+//    - Sensitive Fields:
+//      * virtualConfig.licensePool: list of unredeemed software license keys (SECRET)
+//      * virtualConfig.credentialPool: list of unredeemed account emails & passwords (SECRET)
+//    - Access: NEVER world-readable! Public storefront reads go exclusively through Next.js SSR / `/api/products`
+//      using Firebase Admin SDK (`sanitizePublicProduct()`). Client SDK read restricted to `isCatalogStaff()`
+//      (`admin` or `shop_manager`). All client writes denied (`false`).
+//
+// 3. Collection: orders/{orderId}
+//    - Document ID: Auto-generated order ID
+//    - Sensitive Fields:
+//      * userId: string (customer UID)
+//      * paymentStatus: string ('pending' | 'pending_cod' | 'confirmed' | 'cancelled' | 'failed' | 'refunded')
+//      * orderStatus: string ('pending' | 'processing' | 'shipped' | 'delivered' | 'completed' | 'cancelled')
+//      * deliveries: list of pre-reserved digital credentials/keys (SECRET until paymentStatus == 'confirmed')
+//      * shippingAddress, paymentDetails, customer: customer PII & payment metadata
+//    - Access: Order staff (`admin`, `shop_manager`, `order_manager`) may read/subscribe (`subscribeToAllOrders`).
+//      Verified owner (`resource.data.userId == request.auth.uid`) may read ONLY when
+//      `paymentStatus == 'confirmed' && orderStatus != 'cancelled'`. All client writes denied (`false`).
+//
+// 4. Collection: notifications/{notifId}
+//    - Document ID: Auto-generated or deterministic (`order_{orderId}`, `cust_order_{orderId}`)
+//    - Fields:
+//      * recipient: string (immutable; either customer UID or 'admin')
+//      * type: string (immutable)
+//      * title: string (immutable)
+//      * message: string (immutable)
+//      * link: string (immutable)
+//      * isRead: bool (mutable by authorized recipient)
+//      * createdAt: timestamp (immutable)
+//    - Access: Recipient (`request.auth.uid`) or order staff (when `recipient == 'admin'`) may read, mark `isRead`,
+//      or delete. Client creation denied (`false`).
+//
+// 5. Collection: config/{docId}
+//    - Document ID: 'main'
+//    - Fields: Public storefront configuration (storeName, logoUrl, banners, categories, navLinks, deliveryCharge, etc.)
+//    - Access: Read allowed ONLY for `docId == 'main'`. All client writes denied (`false` — updated via `/api/settings`).
+//
+// 6. Collection: media/{mediaId}
+//    - Document ID: Auto-generated media ID
+//    - Fields: Uploaded product/storefront asset metadata (`name`, `url`, `size`, `deleteUrl`, `uploadedAt`)
+//    - Access: Read restricted to `isCatalogStaff()`. All client writes denied (`false`).
+//
+// 7. Collection: stats/{statId}
+//    - Document ID: 'global' (and aggregate stat docs)
+//    - Fields: Storefront traffic & operational metrics (`trafficCount`, etc.)
+//    - Access: Read restricted to `isOrderStaff()`. All client writes denied (`false`).
+//
+// 8. Server-Only Sensitive Collections (100% Client Read & Write Denied):
+//    - otps/{email}: Hashed OTPs, salts, attempt counters, & AES-256-GCM encrypted pending registration secrets
+//    - used_transactions/{trxId}: Mobile banking (bKash/Nagad/Rocket) TrxID anti-replay locks
+//    - rate_limits/{bucketKey}: Serverless distributed rate-limiting buckets
+//    - push_tokens/{tokenId}: FCM web push device registration tokens
+//    - fraud_checks/{phone}: Cached Steadfast courier fraud history keyed by customer phone number (PII)
+//    - security_audit_logs/{logId}: Tamper-resistant server-only security audit trail
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions — Authentication & RBAC
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthenticated() {
+      return isSignedIn();
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasVerifiedEmail() {
+      return isSignedIn() &&
+        ('email_verified' in request.auth.token) &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return hasVerifiedEmail() &&
+        ('email' in request.auth.token) &&
+        request.auth.token.email == 'afratechpoint@gmail.com';
+    }
+
+    function tokenRole() {
+      return (
+        isSignedIn() &&
+        ('role' in request.auth.token) &&
+        (request.auth.token.role is string)
+      )
+        ? request.auth.token.role
+        : '';
+    }
+
+    function userDocRole() {
+      return (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        ('role' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data) &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role is string)
+      )
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'customer';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        tokenRole() == 'admin' ||
+        userDocRole() == 'admin'
+      );
+    }
+
+    function isCatalogStaff() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        tokenRole() in ['admin', 'shop_manager'] ||
+        userDocRole() in ['admin', 'shop_manager']
+      );
+    }
+
+    function isOrderStaff() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        tokenRole() in ['admin', 'shop_manager', 'order_manager'] ||
+        userDocRole() in ['admin', 'shop_manager', 'order_manager']
+      );
+    }
+
+    // ===============================================================
+    // Helper Functions — Schema, Type, Ownership & DoS Validation
+    // ===============================================================
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+        (('uid' in resource.data) && request.resource.data.uid == resource.data.uid);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isValidUrl(url) {
+      return (url is string) &&
+        url.size() <= 1024 &&
+        (url.matches('^https://.*') || url.matches('^http://.*'));
+    }
+
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) || (
+        (data[field] is string) &&
+        data[field].size() >= minLen &&
+        data[field].size() <= maxLen
+      );
+    }
+
+    function isValidOptionalPhone(data) {
+      return !('phone' in data) || (
+        (data.phone is string) &&
+        (data.phone.size() == 0 || (data.phone.size() == 11 && data.phone.matches('^[0-9]{11}$')))
+      );
+    }
+
+    function isValidOptionalPhotoUrl(data) {
+      return !('photoURL' in data) || (
+        (data.photoURL is string) &&
+        (data.photoURL.size() == 0 || isValidUrl(data.photoURL))
+      );
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserProfileData(data) {
+      return isValidOptionalString(data, 'displayName', 0, 100) &&
+        isValidOptionalPhone(data) &&
+        isValidOptionalString(data, 'address', 0, 300) &&
+        isValidOptionalString(data, 'division', 0, 60) &&
+        isValidOptionalString(data, 'district', 0, 60) &&
+        isValidOptionalString(data, 'upazila', 0, 80) &&
+        isValidOptionalString(data, 'bio', 0, 500) &&
+        isValidOptionalPhotoUrl(data);
+    }
+
+    function isValidUserProfileUpdate() {
+      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+      return changedKeys.hasOnly([
+          'displayName',
+          'phone',
+          'address',
+          'division',
+          'district',
+          'upazila',
+          'bio',
+          'photoURL',
+          'updatedAt'
+        ]) &&
+        areImmutableFieldsUnchanged([
+          'role',
+          'isAdmin',
+          'uid',
+          'email',
+          'createdAt',
+          'lastLogin',
+          'customClaims',
+          'permissions'
+        ]) &&
+        uidNotModified() &&
+        (
+          !changedKeys.hasAny(['updatedAt']) ||
+          (('updatedAt' in request.resource.data) &&
+            (request.resource.data.updatedAt is timestamp) &&
+            request.resource.data.updatedAt == request.time)
+        ) &&
+        isValidUserProfileData(request.resource.data);
+    }
+
+    function isConfirmedCustomerOrderOwner() {
+      return isSignedIn() &&
+        ('userId' in resource.data) &&
+        resource.data.userId == request.auth.uid &&
+        ('paymentStatus' in resource.data) &&
+        resource.data.paymentStatus == 'confirmed' &&
+        ('orderStatus' in resource.data) &&
+        resource.data.orderStatus != 'cancelled';
+    }
+
+    function canAccessNotification() {
+      return isSignedIn() &&
+        ('recipient' in resource.data) &&
+        (
+          resource.data.recipient == request.auth.uid ||
+          (resource.data.recipient == 'admin' && isOrderStaff())
+        );
+    }
+
+    function isValidNotificationUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) &&
+        areImmutableFieldsUnchanged([
+          'recipient',
+          'type',
+          'title',
+          'message',
+          'link',
+          'createdAt'
+        ]) &&
+        ('isRead' in request.resource.data) &&
+        (request.resource.data.isRead is bool);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // 1. User Profiles (PII protected; role/privilege escalation strictly blocked)
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if false; // Created exclusively via verified server sync (`syncUserToFirestore`)
+      allow update: if isOwner(userId) && isValidUserProfileUpdate();
+      allow delete: if isAdmin() &&
+        request.auth.uid != userId &&
+        (!('email' in resource.data) || resource.data.email != 'afratechpoint@gmail.com');
+    }
+
+    // 2. Products Catalog (NEVER world-readable — contains raw virtualConfig.licensePool & credentialPool)
+    match /products/{productId} {
+      allow read: if isCatalogStaff();
+      allow write: if false; // Mutated exclusively via verified server APIs & checkout transactions
+    }
+
+    // 3. Orders (Pre-reserved digital `deliveries` protected until payment is confirmed)
+    match /orders/{orderId} {
+      allow read: if isOrderStaff() || isConfirmedCustomerOrderOwner();
+      allow write: if false; // Created & updated exclusively via `/api/orders` Admin SDK transactions
+    }
+
+    // 4. In-App Notifications
+    match /notifications/{notifId} {
+      allow read: if canAccessNotification();
+      allow create: if false; // Created exclusively on the server
+      allow update: if canAccessNotification() && isValidNotificationUpdate();
+      allow delete: if canAccessNotification();
+    }
+
+    // 5. Public Storefront Settings (`config/main` only)
+    match /config/{docId} {
+      allow read: if docId == 'main';
+      allow write: if false; // Updated exclusively via `/api/settings` server route
+    }
+
+    // 6. Media Library Metadata
+    match /media/{mediaId} {
+      allow read: if isCatalogStaff();
+      allow write: if false;
+    }
+
+    // 7. Storefront & Operational Statistics
+    match /stats/{statId} {
+      allow read: if isOrderStaff();
+      allow write: if false;
+    }
+
+    // ===============================================================
+    // Server-Only Sensitive Collections (Explicit Total Client Deny)
+    // ===============================================================
+
+    // Hashed OTPs, salts, & AES-256-GCM encrypted pending registration payloads
+    match /otps/{email} {
+      allow read, write: if false;
+    }
+
+    // Mobile banking (bKash / Nagad / Rocket) TrxID replay-prevention locks
+    match /used_transactions/{trxId} {
+      allow read, write: if false;
+    }
+
+    // Distributed serverless API rate-limit buckets
+    match /rate_limits/{bucketKey} {
+      allow read, write: if false;
+    }
+
+    // FCM web push device registration tokens
+    match /push_tokens/{tokenId} {
+      allow read, write: if false;
+    }
+
+    // Cached Steadfast courier delivery/fraud history PII
+    match /fraud_checks/{phone} {
+      allow read, write: if false;
+    }
+
+    // Tamper-resistant server-only security audit trail
+    match /security_audit_logs/{logId} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Default Deny Catch-All
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

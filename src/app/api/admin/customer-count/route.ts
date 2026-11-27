@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
     const count = await storage.getCustomersCount();
     return NextResponse.json({ count });
   } catch (error: any) {
-    console.error("[API Customer Count Error]:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("[API Customer Count Error]:", error?.message);
+    return NextResponse.json({ error: "Failed to fetch customer count" }, { status: 500 });
   }
 }

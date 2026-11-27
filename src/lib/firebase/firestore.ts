@@ -1,32 +1,25 @@
 // lib/firebase/firestore.ts
-// Client-side Firestore helpers for reading/writing orders.
-// Uses the Firebase client SDK (safe to import in "use client" components).
+// Read-only client-side Firestore subscription helper for authorized staff.
+// All mutations (orders, products, inventory, settings, profiles) MUST go through
+// server-verified API route handlers — direct client-side write helpers are intentionally omitted.
 
 import { initializeApp, getApps, getApp } from "firebase/app";
 import {
   getFirestore,
   collection,
-  doc,
-  addDoc,
-  getDoc,
-  getDocs,
-  updateDoc,
   query,
-  where,
   orderBy,
-  Timestamp,
-  serverTimestamp,
   onSnapshot,
 } from "firebase/firestore";
 import type { Order } from "@/types/order";
 
 const firebaseConfig = {
-  apiKey:            process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
-  authDomain:        process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN!,
-  projectId:         process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
-  storageBucket:     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!,
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN!,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!,
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
-  appId:             process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -39,139 +32,30 @@ function toSafeDate(val: any): Date {
   return isNaN(d.getTime()) ? new Date() : d;
 }
 
-// ── Create a new order ────────────────────────────────────────────────────
-export async function createOrderInFirestore(
-  orderData: Omit<Order, "id" | "createdAt" | "updatedAt">
-): Promise<string> {
-  const ordersRef = collection(db, "orders");
-  const docRef = await addDoc(ordersRef, {
-    ...orderData,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
-  return docRef.id;
-}
-
-// ── Fetch a single order by ID ────────────────────────────────────────────
-export async function getOrderById(orderId: string): Promise<Order | null> {
-  const docRef  = doc(db, "orders", orderId);
-  const docSnap = await getDoc(docRef);
-  if (!docSnap.exists()) return null;
-  const data = docSnap.data();
-  return {
-    id: docSnap.id,
-    ...data,
-    // Convert Firestore Timestamps to JS Dates
-    createdAt: toSafeDate(data.createdAt),
-    updatedAt: toSafeDate(data.updatedAt),
-  } as Order;
-}
-
-// ── Fetch all orders for a specific user ──────────────────────────────────
-export async function getOrdersByUser(userId: string): Promise<Order[]> {
-  const q = query(
-    collection(db, "orders"),
-    where("userId", "==", userId),
-    orderBy("createdAt", "desc")
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      createdAt: toSafeDate(data.createdAt),
-      updatedAt: toSafeDate(data.updatedAt),
-    } as Order;
-  });
-}
-
-// ── Fetch ALL orders (admin) ──────────────────────────────────────────────
-export async function getAllOrders(): Promise<Order[]> {
-  const q = query(
-    collection(db, "orders"),
-    orderBy("createdAt", "desc")
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      createdAt: toSafeDate(data.createdAt),
-      updatedAt: toSafeDate(data.updatedAt),
-    } as Order;
-  });
-}
-
-// ── Real-time subscription for ALL orders (admin) ─────────────────────────
+/**
+ * Real-time order badge subscription for authenticated Admin / Order Staff.
+ * Enforced by `firestore.rules` (`isOrderStaff()`). Falls back silently if denied,
+ * as `AdminClientLayout` also listens on the server SSE `/api/realtime` stream.
+ */
 export function subscribeToAllOrders(callback: (orders: Order[]) => void) {
-  const q = query(
-    collection(db, "orders"),
-    orderBy("createdAt", "desc")
+  const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const orders = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          createdAt: toSafeDate(data.createdAt),
+          updatedAt: toSafeDate(data.updatedAt),
+        } as Order;
+      });
+      callback(orders);
+    },
+    () => {
+      // Silently ignore client Firestore permission errors — server SSE handles sync
+    }
   );
-
-  return onSnapshot(q, (snap) => {
-    const orders = snap.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: toSafeDate(data.createdAt),
-        updatedAt: toSafeDate(data.updatedAt),
-      } as Order;
-    });
-    callback(orders);
-  }, (error) => {
-    console.error("Error subscribing to orders:", error);
-  });
-}
-
-// ── Real-time count of NEW orders (pending) ───────────────────────────
-export function subscribeToNewOrdersCount(callback: (count: number) => void) {
-  const q = query(
-    collection(db, "orders"),
-    where("orderStatus", "==", "pending")
-  );
-
-  return onSnapshot(q, (snap) => {
-    callback(snap.size);
-  }, (error) => {
-    console.error("Error subscribing to new orders count:", error);
-  });
-}
-
-// ── Update order details (admin) ──────────────────────────────────────────
-export async function updateOrderInFirestore(
-  orderId: string,
-  fields: Partial<Order>
-): Promise<void> {
-  const docRef = doc(db, "orders", orderId);
-  await updateDoc(docRef, { ...fields, updatedAt: serverTimestamp() });
-}
-
-// ── Product Management ────────────────────────────────────────────────────
-export async function getProductsFromFirestore() {
-  const q = query(collection(db, "products"), orderBy("createdAt", "desc"));
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-}
-
-export async function createProductInFirestore(data: any) {
-  const docRef = await addDoc(collection(db, "products"), {
-    ...data,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  return { id: docRef.id, ...data };
-}
-
-export async function updateProductInFirestore(id: string, data: any) {
-  const docRef = doc(db, "products", id);
-  await updateDoc(docRef, { ...data, updatedAt: serverTimestamp() });
-}
-
-export async function deleteProductFromFirestore(id: string) {
-  const { deleteDoc } = await import("firebase/firestore");
-  await deleteDoc(doc(db, "products", id));
 }

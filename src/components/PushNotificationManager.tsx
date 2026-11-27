@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef } from "react";
 import { getToken, onMessage } from "firebase/messaging";
 import { getPushMessaging } from "@/lib/firebase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -8,22 +8,15 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
 export default function PushNotificationManager() {
-  const { user } = useAuth();
+  const { user, isAdmin, isShopManager, isOrderManager } = useAuth();
   const router = useRouter();
   const hasRegistered = useRef(false);
-  // Read the debug flag from the browser only. Using useSearchParams() here
-  // (in the root layout) suspends SSR and causes a hydration mismatch.
-  const [debug, setDebug] = useState(false);
+  const isStaff = isAdmin || isShopManager || isOrderManager;
 
-  useEffect(() => {
-    setDebug(new URLSearchParams(window.location.search).get("debug") === "true");
-  }, []);
-
-  // --- Manual Permission Function (Mobile Compatibility) ---
   const triggerManualPermission = async (isForAdmin = false) => {
     const messaging = await getPushMessaging();
-    if (!messaging) return false;
-    
+    if (!messaging || !user) return false;
+
     try {
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
@@ -31,22 +24,30 @@ export default function PushNotificationManager() {
         return false;
       }
 
-      const token = await getToken(messaging, { 
-        vapidKey: process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY || ""
+      const token = await getToken(messaging, {
+        vapidKey: process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY || "",
       });
 
       if (token) {
-        const uid = isForAdmin ? "admin" : user?.uid;
-        if (!uid) return false;
+        const uid = isForAdmin && isStaff ? "admin" : user.uid;
+        const idToken = await user.getIdToken();
 
-        await fetch("/api/push-token", {
+        const res = await fetch("/api/push-token", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
           body: JSON.stringify({ uid, token }),
         });
-        
-        toast.success("Notifications enabled successfully!");
-        return true;
+
+        if (res.ok) {
+          try {
+            sessionStorage.setItem("afra_fcm_token", token);
+          } catch {}
+          toast.success("Notifications enabled successfully!");
+          return true;
+        }
       }
     } catch (err) {
       console.error("[Push] Manual registration error:", err);
@@ -55,13 +56,18 @@ export default function PushNotificationManager() {
     return false;
   };
 
-  // Expose to window for other components to trigger
   useEffect(() => {
-    (window as any).triggerPushPermission = triggerManualPermission;
-  }, [user]);
+    if (typeof window !== "undefined") {
+      (window as any).triggerPushPermission = triggerManualPermission;
+    }
+  }, [user, isStaff]);
 
   useEffect(() => {
-    // In development, unregister any stale caching service workers so HTML/chunks never serve stale hashes
+    if (!user) {
+      hasRegistered.current = false;
+      return;
+    }
+
     if (
       process.env.NODE_ENV !== "production" &&
       typeof window !== "undefined" &&
@@ -80,7 +86,7 @@ export default function PushNotificationManager() {
       return;
     }
 
-    if (!user || hasRegistered.current) return;
+    if (hasRegistered.current) return;
 
     const setupPush = async () => {
       try {
@@ -93,115 +99,86 @@ export default function PushNotificationManager() {
         }
         const messaging = await getPushMessaging();
         if (!messaging) return;
-        
-        // console.log("[Push] Requesting permission...");
+
         const permission = await Notification.requestPermission();
-        
-        if (permission !== "granted") {
-          return;
-        }
+        if (permission !== "granted") return;
 
-        // 2. Register Service Worker (Unified)
-        // console.log("[Push] Registering Service Worker...");
-        const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {
-          scope: "/",
-        });
-
-        // Ensure we have the latest version
+        const registration = await navigator.serviceWorker.register(
+          "/firebase-messaging-sw.js",
+          { scope: "/" }
+        );
         await registration.update();
-        
-        // 3. Get FCM Token
-        // console.log("[Push] Getting Token...");
-        const token = await getToken(messaging!, {
+
+        const token = await getToken(messaging, {
           vapidKey: process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY,
           serviceWorkerRegistration: registration,
         });
 
         if (token) {
-          // 4. Save token to server
+          const idToken = await user.getIdToken();
+          try {
+            sessionStorage.setItem("afra_fcm_token", token);
+          } catch {}
+
           await fetch("/api/push-token", {
             method: "POST",
             body: JSON.stringify({ uid: user.uid, token }),
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+            },
           });
 
-          // 5. Also save as 'admin' if user is admin
-          const adminEmails = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || "").toLowerCase().split(",");
-          const userEmail = (user.email || "").toLowerCase();
-          
-          if (userEmail && adminEmails.includes(userEmail)) {
-             await fetch("/api/push-token", {
+          if (isStaff) {
+            await fetch("/api/push-token", {
               method: "POST",
               body: JSON.stringify({ uid: "admin", token }),
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${idToken}`,
+              },
             });
           }
 
           hasRegistered.current = true;
         }
 
-        // Handle foreground messages with a nice toast
-        onMessage(messaging!, (payload) => {
-          console.log("[Push] Foreground message received:", payload);
+        onMessage(messaging, (payload) => {
           if (payload.notification) {
-            // 1. Show the nice on-page toast
+            const rawUrl = payload.data?.url;
+            const safePath =
+              typeof rawUrl === "string" && rawUrl.startsWith("/") && !rawUrl.startsWith("//")
+                ? rawUrl
+                : undefined;
+
             toast(payload.notification.title, {
               description: payload.notification.body,
-              action: payload.data?.url ? {
-                label: "View",
-                onClick: () => router.push(payload.data!.url),
-              } : undefined,
+              action: safePath
+                ? {
+                    label: "View",
+                    onClick: () => router.push(safePath),
+                  }
+                : undefined,
               duration: 10000,
             });
 
-            // 2. FORCE an OS-level System Notification even while viewing the page
             if (Notification.permission === "granted") {
-              const options = {
+              new Notification(payload.notification.title || "Afra Tech Point", {
                 body: payload.notification.body,
                 icon: payload.notification.icon || "/logo.png",
                 tag: "atp-notification-fg",
-                data: payload.data,
-              };
-              // This is what puts it in the Windows/Android Notification Center
-              new Notification(payload.notification.title!, options);
+                data: safePath ? { url: safePath } : {},
+              });
             }
           }
         });
-
       } catch (error) {
-        console.error("[Push] Error:", error);
+        console.error("[Push] Setup error:", error);
       }
     };
 
     setupPush();
-  }, [user, router]);
-
-  // Debug Helper: Show a test button if ?debug=true
-  if (debug) {
-    return (
-      <div className="fixed bottom-24 right-4 z-[200]">
-        <button 
-          onClick={() => {
-            if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
-              navigator.serviceWorker.controller.postMessage({
-                type: "TEST_NOTIFICATION",
-                title: "ATP Debug",
-                body: "If you see this, OS pop-ups are WORKING!"
-              });
-              // Also try direct
-               new Notification("ATP Direct Test", { body: "Testing direct browser notification." });
-               toast.success("Manual notification triggered. Check your OS center.");
-            } else {
-              toast.error("Service worker not active or not controlling page.");
-            }
-          }}
-          className="bg-black text-white px-4 py-2 rounded-full shadow-lg text-xs font-bold border border-white/20"
-        >
-          DEBUG: Test OS Notification
-        </button>
-      </div>
-    );
-  }
+  }, [user, isStaff, router]);
 
   return null;
 }

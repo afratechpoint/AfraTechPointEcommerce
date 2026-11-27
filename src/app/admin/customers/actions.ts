@@ -1,128 +1,184 @@
 "use server";
 
+import { z } from "zod";
 import { adminAuth, adminDb } from "@/lib/firebase/admin";
+import {
+  getPrimarySuperAdminEmail,
+  isConfiguredAdminEmail,
+  verifyAdminToken,
+  verifyIdTokenString,
+} from "@/lib/auth-server";
+import { ALLOWED_ROLES } from "@/lib/security/validation";
+import { logSecurityEvent } from "@/lib/security/audit-log";
 
-/**
- * Helper to verify caller's admin privileges.
- */
-async function verifyAdmin(token: string) {
-  if (!token) throw new Error("No token provided");
-  const decodedToken = await adminAuth.verifyIdToken(token);
-  
-  // First check if the token claim itself is admin
-  if (decodedToken.role === "admin") {
-    return decodedToken.uid;
-  }
-  
-  // Fallback to Firestore check
-  const userDoc = await adminDb.collection("users").doc(decodedToken.uid).get();
-  const data = userDoc.data();
-  
-  if (data?.role === "admin") {
-    return decodedToken.uid;
-  }
-
-  // ── BOOTSTRAPPING LOGIC ──────────────────────────────────────────
-  // If there are NO admins in the system at all, the first person 
-  // to hit this becomes an admin. Or if their email matches ADMIN_EMAIL.
-  const adminEmail = process.env.ADMIN_EMAIL || process.env.NEXT_PUBLIC_ADMIN_EMAILS;
-  const isFirstOrConfiguredAdmin = 
-    (adminEmail && adminEmail.includes(decodedToken.email || "---"));
-
-  if (isFirstOrConfiguredAdmin) {
-    console.log(`Bootstrapping admin privileges for: ${decodedToken.email}`);
-    try {
-      await adminAuth.setCustomUserClaims(decodedToken.uid, { role: "admin" });
-      await adminDb.collection("users").doc(decodedToken.uid).set({ role: "admin" }, { merge: true });
-    } catch (e: any) {
-      console.warn("Could not write admin role to DB/Auth, but granting access since email matches ADMIN_EMAIL", e.message);
-    }
-    return decodedToken.uid;
-  }
-
-  // Check if ANY admin exists in Firestore
-  const adminQuery = await adminDb.collection("users").where("role", "==", "admin").limit(1).get();
-  if (adminQuery.empty) {
-    console.log(`No admins found in system. Auto-elevating: ${decodedToken.email}`);
-    try {
-      await adminAuth.setCustomUserClaims(decodedToken.uid, { role: "admin" });
-      await adminDb.collection("users").doc(decodedToken.uid).set({ role: "admin" }, { merge: true });
-    } catch(e) {}
-    return decodedToken.uid;
-  }
-  
-  throw new Error(`Unauthorized: ${decodedToken.email} is not an admin.`);
-}
+const uidSchema = z.string().trim().min(1).max(128);
+const roleSchema = z.enum(ALLOWED_ROLES);
 
 export async function getUsers(token: string) {
-  await verifyAdmin(token);
-  
-  // 1. List ALL users from Firebase Auth (source of truth)
-  const listResult = await adminAuth.listUsers(1000);
+  const caller = await verifyAdminToken(token, { checkRevoked: true });
+  if (!caller) {
+    await logSecurityEvent({
+      action: "admin.customers.list",
+      severity: "warn",
+      outcome: "denied",
+      reason: "Unauthorized attempt to list customer accounts",
+    });
+    throw new Error("Unauthorized");
+  }
 
-  // 2. Fetch all Firestore docs in one go for role/profile data
+  const listResult = await adminAuth.listUsers(1000);
   const snapshot = await adminDb.collection("users").get();
   const firestoreMap: Record<string, any> = {};
-  snapshot.forEach((doc: any) => { firestoreMap[doc.id] = doc.data(); });
+  snapshot.forEach((doc: any) => {
+    firestoreMap[doc.id] = doc.data();
+  });
 
-  // 3. Merge: Auth user + Firestore enrichment
-  return listResult.users.map((authUser: any) => {
-    const fs = firestoreMap[authUser.uid] || {};
-    return {
-      uid:         authUser.uid,
-      email:       authUser.email || fs.email || "",
-      displayName: authUser.displayName || fs.displayName || "",
-      role:        fs.role || "customer",
-      createdAt:   authUser.metadata.creationTime || new Date().toISOString(),
-    };
-  }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return listResult.users
+    .map((authUser: any) => {
+      const fs = firestoreMap[authUser.uid] || {};
+      const email = authUser.email || fs.email || "";
+      const effectiveRole = isConfiguredAdminEmail(email)
+        ? "admin"
+        : authUser.customClaims?.role || fs.role || "customer";
+
+      return {
+        uid: authUser.uid,
+        email,
+        displayName: authUser.displayName || fs.displayName || "",
+        role: effectiveRole,
+        createdAt: authUser.metadata.creationTime || new Date().toISOString(),
+      };
+    })
+    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
-/** Expose super-admin email to the client so the UI can enforce restrictions. */
 export async function getSuperAdminEmail(token: string): Promise<string> {
-  await verifyAdmin(token);
-  return process.env.ADMIN_EMAIL || "";
+  const caller = await verifyAdminToken(token, { checkRevoked: true });
+  if (!caller) {
+    throw new Error("Unauthorized");
+  }
+  return getPrimarySuperAdminEmail();
 }
 
 export async function updateUserRole(targetUid: string, newRole: string, token: string) {
-  const callerDecoded = await adminAuth.verifyIdToken(token);
-  const callerEmail = callerDecoded.email || "";
-  const superAdminEmail = process.env.ADMIN_EMAIL || "";
+  const parsedUid = uidSchema.safeParse(targetUid);
+  const parsedRole = roleSchema.safeParse(newRole);
+  if (!parsedUid.success || !parsedRole.success) {
+    throw new Error("Invalid user ID or role.");
+  }
 
-  // Only the ADMIN_EMAIL holder (super-admin) can change roles
-  if (callerEmail !== superAdminEmail) {
+  const callerDecoded = await verifyIdTokenString(token, true);
+  if (!callerDecoded?.uid || !callerDecoded?.email || callerDecoded.email_verified === false) {
+    await logSecurityEvent({
+      action: "admin.customers.update_role",
+      severity: "high",
+      outcome: "denied",
+      targetType: "user",
+      targetId: parsedUid.data,
+      reason: "Unauthenticated or unverified caller",
+    });
+    throw new Error("Unauthorized");
+  }
+
+  const callerEmail = callerDecoded.email.trim().toLowerCase();
+  const superAdminEmail = getPrimarySuperAdminEmail();
+
+  if (!superAdminEmail || callerEmail !== superAdminEmail) {
+    await logSecurityEvent({
+      action: "admin.customers.update_role",
+      severity: "critical",
+      actorUid: callerDecoded.uid,
+      actorEmail: callerEmail,
+      targetType: "user",
+      targetId: parsedUid.data,
+      outcome: "denied",
+      reason: "Non-super-admin attempted role modification",
+      metadata: { requestedRole: parsedRole.data },
+    });
     throw new Error("Only the permanent super-admin can change user roles.");
   }
 
-  // Super-admin cannot change their own role
-  if (callerDecoded.uid === targetUid) {
+  if (callerDecoded.uid === parsedUid.data) {
     throw new Error("You cannot change your own role.");
   }
 
-  // Nobody can demote/change the permanent super-admin's role
-  const targetUser = await adminAuth.getUser(targetUid);
-  if (targetUser.email === superAdminEmail) {
+  const targetUser = await adminAuth.getUser(parsedUid.data);
+  if (targetUser.email && targetUser.email.trim().toLowerCase() === superAdminEmail) {
     throw new Error("The permanent super-admin's role cannot be changed.");
   }
 
-  // Apply the role change
-  await adminAuth.setCustomUserClaims(targetUid, { role: newRole });
-  await adminDb.collection("users").doc(targetUid).set({ role: newRole }, { merge: true });
-  
+  await adminAuth.setCustomUserClaims(parsedUid.data, { role: parsedRole.data });
+  await adminDb
+    .collection("users")
+    .doc(parsedUid.data)
+    .set({ role: parsedRole.data }, { merge: true });
+
+  // Force token refresh on target user's next privileged action so role demotions take immediate effect
+  await adminAuth.revokeRefreshTokens(parsedUid.data).catch(() => {});
+
+  await logSecurityEvent({
+    action: "admin.customers.update_role",
+    severity: "high",
+    actorUid: callerDecoded.uid,
+    actorEmail: callerEmail,
+    actorRole: "admin",
+    targetType: "user",
+    targetId: parsedUid.data,
+    outcome: "allowed",
+    metadata: { newRole: parsedRole.data, targetEmail: targetUser.email || "" },
+  });
+
   return { success: true };
 }
 
 export async function deleteUserAccount(targetUid: string, token: string) {
-  const callerUid = await verifyAdmin(token);
-  if (callerUid === targetUid) {
+  const parsedUid = uidSchema.safeParse(targetUid);
+  if (!parsedUid.success) {
+    throw new Error("Invalid user ID.");
+  }
+
+  const caller = await verifyAdminToken(token, { checkRevoked: true });
+  if (!caller) {
+    await logSecurityEvent({
+      action: "admin.customers.delete_user",
+      severity: "high",
+      targetType: "user",
+      targetId: parsedUid.data,
+      outcome: "denied",
+      reason: "Unauthorized user deletion attempt",
+    });
+    throw new Error("Unauthorized");
+  }
+
+  if (caller.uid === parsedUid.data) {
     throw new Error("You cannot delete your own account from the admin panel.");
   }
 
-  // Delete from Firebase Auth
-  await adminAuth.deleteUser(targetUid);
-  
-  // Delete from Firestore
-  await adminDb.collection("users").doc(targetUid).delete();
-  
+  const targetUser = await adminAuth.getUser(parsedUid.data);
+  const superAdminEmail = getPrimarySuperAdminEmail();
+  if (
+    targetUser.email &&
+    (isConfiguredAdminEmail(targetUser.email) ||
+      (superAdminEmail && targetUser.email.trim().toLowerCase() === superAdminEmail))
+  ) {
+    throw new Error("Protected administrator accounts cannot be deleted.");
+  }
+
+  await adminAuth.revokeRefreshTokens(parsedUid.data).catch(() => {});
+  await adminAuth.deleteUser(parsedUid.data);
+  await adminDb.collection("users").doc(parsedUid.data).delete();
+
+  await logSecurityEvent({
+    action: "admin.customers.delete_user",
+    severity: "high",
+    actorUid: caller.uid,
+    actorEmail: caller.email || null,
+    actorRole: "admin",
+    targetType: "user",
+    targetId: parsedUid.data,
+    outcome: "allowed",
+    metadata: { deletedEmail: targetUser.email || "" },
+  });
+
   return { success: true };
 }

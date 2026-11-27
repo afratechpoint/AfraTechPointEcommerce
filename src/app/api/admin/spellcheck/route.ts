@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyOrderStaff } from "@/lib/auth-server";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 
 // Tech, gadget & Bangladesh e-commerce terms that should never be flagged as typos
 const IGNORED_WORDS = new Set([
@@ -77,6 +79,21 @@ function maskPreservingOffsets(input: string): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const staffCaller = await verifyOrderStaff(req);
+    if (!staffCaller) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const rl = await checkRateLimit({
+      bucket: "admin_spellcheck",
+      identifier: staffCaller.uid,
+      limit: 90,
+      windowMs: 60 * 1000,
+    });
+    if (!rl.allowed) {
+      return NextResponse.json({ issues: [] }, { status: 429 });
+    }
+
     const body = await req.json();
     const rawText = typeof body?.text === "string" ? body.text : "";
     const isMultiline = Boolean(body?.isMultiline);

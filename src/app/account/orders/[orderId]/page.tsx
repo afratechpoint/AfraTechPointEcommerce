@@ -709,14 +709,20 @@ export default function UserOrderDetailPage() {
                   {order.fulfillment?.targetUrl && (
                     <div className="flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-4">
                       <span className="text-gray-500 shrink-0">Target Link</span>
-                      <a
-                        href={order.fulfillment.targetUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-semibold text-gray-900 underline break-all sm:text-right"
-                      >
-                        {order.fulfillment.targetUrl}
-                      </a>
+                      {/^https?:\/\//i.test(order.fulfillment.targetUrl) ? (
+                        <a
+                          href={order.fulfillment.targetUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-gray-900 underline break-all sm:text-right"
+                        >
+                          {order.fulfillment.targetUrl}
+                        </a>
+                      ) : (
+                        <span className="font-semibold text-gray-900 break-all sm:text-right">
+                          {order.fulfillment.targetUrl}
+                        </span>
+                      )}
                     </div>
                   )}
                   {order.fulfillment?.customFields?.map((f, i) => (

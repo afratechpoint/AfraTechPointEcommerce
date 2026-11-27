@@ -14,6 +14,7 @@ import PremiumLoader from "@/components/PremiumLoader";
 import { storage } from "@/lib/storage";
 import { isProductOutOfStock, sanitizePublicProduct } from "@/lib/inventory";
 import { getAppUrl } from "@/lib/app-url";
+import { safeJsonLdStringify } from "@/lib/security/validation";
 
 const SHOP_URL = getAppUrl();
 
@@ -199,13 +200,13 @@ export default async function ProductDetailPage({ params }: Props) {
       {jsonLd && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLdStringify(jsonLd) }}
         />
       )}
       {breadcrumbLd && (
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLdStringify(breadcrumbLd) }}
         />
       )}
       <Suspense fallback={<PremiumLoader />}>

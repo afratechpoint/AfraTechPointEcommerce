@@ -1,108 +1,188 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { adminAuth, adminDb } from "@/lib/firebase/admin";
-import { syncUserToFirestore } from "@/app/actions/auth";
+import { syncVerifiedUserRecord } from "@/lib/auth-sync";
+import {
+  decryptTransientSecret,
+  verifyOtpHash,
+} from "@/lib/security/crypto-helpers";
+import { checkRateLimit } from "@/lib/security/rate-limit";
+import { getClientIp, logSecurityEvent } from "@/lib/security/audit-log";
 
-export async function POST(req: Request) {
+const verifyOtpSchema = z.object({
+  email: z.string().trim().email().max(200),
+  otp: z
+    .union([z.string(), z.number()])
+    .transform((v) => String(v).trim())
+    .refine((v) => /^\d{6}$/.test(v), "Enter a valid 6-digit verification code."),
+  type: z.enum(["register", "login"]),
+});
+
+const MAX_OTP_ATTEMPTS = 5;
+
+export async function POST(req: NextRequest) {
+  const ip = getClientIp(req);
+
   try {
-    const body = await req.json();
-    const { email, otp, type } = body;
-
-    if (!email || !otp) {
-      return NextResponse.json({ error: "Email and OTP code are required" }, { status: 400 });
+    // 1. Per-IP brute-force protection
+    const ipLimit = await checkRateLimit({
+      bucket: "otp_verify_ip",
+      identifier: ip,
+      limit: 15,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many verification attempts. Please wait before trying again." },
+        { status: 429, headers: { "Retry-After": String(ipLimit.retryAfterSeconds) } }
+      );
     }
 
-    const cleanEmail = email.toLowerCase().trim();
-    const cleanOtp = otp.toString().trim();
+    const rawBody = await req.json();
+    const parsed = verifyOtpSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message || "Email and 6-digit OTP code are required" },
+        { status: 400 }
+      );
+    }
+
+    const cleanEmail = parsed.data.email.toLowerCase();
+    const cleanOtp = parsed.data.otp;
+    const { type } = parsed.data;
+
+    const emailLimit = await checkRateLimit({
+      bucket: "otp_verify_email",
+      identifier: cleanEmail,
+      limit: 10,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!emailLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many verification attempts. Please request a new code later." },
+        { status: 429, headers: { "Retry-After": String(emailLimit.retryAfterSeconds) } }
+      );
+    }
 
     const otpDocRef = adminDb.collection("otps").doc(cleanEmail);
-    const otpDocSnap = await otpDocRef.get();
 
-    if (!otpDocSnap.exists) {
-      return NextResponse.json(
-        { error: "No active verification code found or it has expired. Please request a new one." },
-        { status: 400 }
-      );
-    }
+    // 2. Atomic transactional verification (prevents concurrent race-condition brute force & replay)
+    const txOutcome = await adminDb.runTransaction(async (tx: any) => {
+      const otpDocSnap = await tx.get(otpDocRef);
+      if (!otpDocSnap.exists) {
+        return { ok: false as const, status: 400, error: "No active verification code found or it has expired. Please request a new one." };
+      }
 
-    const otpData = otpDocSnap.data();
+      const otpData = otpDocSnap.data() || {};
 
-    // Check expiration
-    if (Date.now() > otpData.expiresAt) {
-      await otpDocRef.delete();
-      return NextResponse.json(
-        { error: "This verification code has expired. Please request a new one." },
-        { status: 400 }
-      );
-    }
+      if (Date.now() > Number(otpData.expiresAt || 0)) {
+        tx.delete(otpDocRef);
+        return { ok: false as const, status: 400, error: "This verification code has expired. Please request a new one." };
+      }
 
-    // Check failed attempts
-    if (otpData.attempts >= 5) {
-      await otpDocRef.delete();
-      return NextResponse.json(
-        { error: "Too many failed attempts. Please request a new verification code." },
-        { status: 400 }
-      );
-    }
+      if (otpData.type !== type) {
+        return { ok: false as const, status: 400, error: "Invalid verification action for this code." };
+      }
 
-    // Verify code
-    if (otpData.otp !== cleanOtp) {
-      await otpDocRef.update({
-        attempts: (otpData.attempts || 0) + 1,
+      const currentAttempts = Number(otpData.attempts || 0);
+      if (currentAttempts >= MAX_OTP_ATTEMPTS) {
+        tx.delete(otpDocRef);
+        return { ok: false as const, status: 400, error: "Too many failed attempts. Please request a new verification code." };
+      }
+
+      const isMatch = otpData.otpHash && otpData.otpSalt
+        ? verifyOtpHash(cleanOtp, otpData.otpHash, otpData.otpSalt)
+        : false;
+
+      if (!isMatch) {
+        const nextAttempts = currentAttempts + 1;
+        if (nextAttempts >= MAX_OTP_ATTEMPTS) {
+          tx.delete(otpDocRef);
+        } else {
+          tx.update(otpDocRef, { attempts: nextAttempts });
+        }
+        const remaining = Math.max(0, MAX_OTP_ATTEMPTS - nextAttempts);
+        return {
+          ok: false as const,
+          status: 400,
+          error:
+            remaining > 0
+              ? `Incorrect verification code. ${remaining} attempt(s) remaining.`
+              : "Too many failed attempts. Please request a new code.",
+        };
+      }
+
+      // Valid match — atomically consume (delete) OTP inside the transaction so it can never be replayed
+      tx.delete(otpDocRef);
+      return { ok: true as const, otpData };
+    });
+
+    if (!txOutcome.ok) {
+      await logSecurityEvent({
+        action: "auth.otp_verify",
+        severity: "warn",
+        actorEmail: cleanEmail,
+        ip,
+        outcome: "denied",
+        reason: txOutcome.error,
       });
-      const remainingAttempts = 4 - (otpData.attempts || 0);
-      return NextResponse.json(
-        { 
-          error: `Incorrect verification code. ${remainingAttempts > 0 ? `${remainingAttempts} attempt(s) remaining.` : "Please request a new code."}` 
-        },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: txOutcome.error }, { status: txOutcome.status });
     }
 
-    // ── OTP VERIFIED SUCCESSFULLY ───────────────────────────────────────────
-
+    const { otpData } = txOutcome;
     let customToken = "";
 
     if (type === "register") {
       const regData = otpData.registrationData;
-      if (!regData || !regData.password) {
-        return NextResponse.json({ error: "Missing registration payload. Please register again." }, { status: 400 });
+      const rawPassword = regData?.encryptedPassword
+        ? decryptTransientSecret(regData.encryptedPassword)
+        : null;
+
+      if (!regData || !rawPassword) {
+        return NextResponse.json(
+          { error: "Missing registration payload. Please register again." },
+          { status: 400 }
+        );
       }
 
-      // 1. Create User in Firebase Auth
       const userRecord = await adminAuth.createUser({
         email: cleanEmail,
-        password: regData.password,
+        password: rawPassword,
         displayName: regData.name,
         emailVerified: true,
       });
 
-      // 2. Sync to Firestore database
-      await syncUserToFirestore(userRecord.uid, cleanEmail, regData.name, "");
-
-      // 3. Generate custom token for instant login
+      await syncVerifiedUserRecord(userRecord.uid, cleanEmail, regData.name, "");
       customToken = await adminAuth.createCustomToken(userRecord.uid);
     } else if (type === "login") {
-      const uid = otpData.uid;
-      if (!uid) {
-        const userRec = await adminAuth.getUserByEmail(cleanEmail);
-        customToken = await adminAuth.createCustomToken(userRec.uid);
-      } else {
-        customToken = await adminAuth.createCustomToken(uid);
+      const targetUid = otpData.uid
+        ? String(otpData.uid)
+        : (await adminAuth.getUserByEmail(cleanEmail)).uid;
+      const userRec = await adminAuth.getUser(targetUid);
+      if (userRec.disabled) {
+        return NextResponse.json({ error: "This account has been disabled." }, { status: 403 });
       }
-    } else {
-      return NextResponse.json({ error: "Invalid verification action" }, { status: 400 });
+      customToken = await adminAuth.createCustomToken(targetUid);
     }
 
-    // Clean up OTP record
-    await otpDocRef.delete();
+    await logSecurityEvent({
+      action: `auth.otp_verified_${type}`,
+      severity: "info",
+      actorEmail: cleanEmail,
+      ip,
+      outcome: "allowed",
+    });
 
     return NextResponse.json({
       success: true,
       customToken,
-      message: type === "register" ? "Registration verified successfully!" : "Login verified successfully!",
+      message:
+        type === "register"
+          ? "Registration verified successfully!"
+          : "Login verified successfully!",
     });
   } catch (err: any) {
-    console.error("Verify OTP API Error:", err);
-    return NextResponse.json({ error: err.message || "Failed to verify code" }, { status: 500 });
+    console.error("[OTP Verify] Unexpected error:", err?.code || err?.message);
+    return NextResponse.json({ error: "Failed to verify code." }, { status: 500 });
   }
 }
