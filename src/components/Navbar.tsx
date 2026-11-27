@@ -35,7 +35,11 @@ export default function Navbar({
   }, []);
 
   const cartCount = items.reduce((sum, item) => sum + item.quantity, 0);
-  const navLinks  = settings.navLinks || [];
+  const navLinks  = (settings.navLinks || []).filter(
+    (link) =>
+      link.href?.trim().toLowerCase() !== "/cart" &&
+      link.label?.trim().toLowerCase() !== "cart"
+  );
 
   // ── User dropdown state ─────────────────────────────────────────
   const [dropdownOpen, setDropdownOpen] = useState(false);
