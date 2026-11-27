@@ -66,17 +66,17 @@ export default function Navbar({
   return (
     <nav className="w-full border-b border-gray-100 bg-white/80 backdrop-blur-md sticky top-0 z-[100] transition-all pt-safe">
       {/* ── Mobile top bar ── */}
-      <div className="flex md:hidden items-center justify-between h-14 px-4 bg-white/95 border-b border-gray-100">
-        <Link href="/" className="shrink-0 relative h-9 w-28" aria-label={`${settings.storeName} Home`}>
+      <div className="flex md:hidden items-center justify-between h-16 px-4 bg-white/95 border-b border-gray-100">
+        <Link href="/" className="shrink-0 relative h-14 w-40 flex items-center" aria-label={`${settings.storeName} Home`}>
           <Image 
-            src={settings.logoUrl ? `${settings.logoUrl}${settings.logoUrl.includes('?') ? '&' : '?'}tr=w-300,f-auto,q-80` : "/logo.png"} 
+            src={settings.logoUrl ? `${settings.logoUrl}${settings.logoUrl.includes('?') ? '&' : '?'}tr=w-500,f-auto,q-90` : "/logo.png"} 
             alt={`${settings.storeName} Logo`} 
             fill
             loading="eager"
             fetchPriority="high"
             unoptimized={true}
-            sizes="120px"
-            className="object-contain object-left" 
+            sizes="160px"
+            className="object-contain object-left mix-blend-multiply" 
           />
         </Link>
         {!isAuthPage && (
@@ -116,20 +116,20 @@ export default function Navbar({
       )}
 
       {/* ── Desktop full nav (3-column grid keeps menu links dead-center on all pages) ── */}
-      <div className="hidden md:grid grid-cols-[1fr_auto_1fr] w-full max-w-[1800px] mx-auto h-16 items-center gap-4 px-4 sm:px-6 md:px-8 lg:px-12">
+      <div className="hidden md:grid grid-cols-[1fr_auto_1fr] w-full max-w-[1800px] mx-auto h-20 items-center gap-4 px-4 sm:px-6 md:px-8 lg:px-12">
 
         {/* ── Left: Logo ─────────────────────────────────────────── */}
         <div className="flex items-center justify-self-start shrink-0">
-          <Link href="/" className="shrink-0 relative h-9 w-28 lg:w-32" aria-label={`${settings.storeName} Home`}>
+          <Link href="/" className="shrink-0 relative h-[72px] w-48 lg:w-56 flex items-center" aria-label={`${settings.storeName} Home`}>
             <Image 
-              src={settings.logoUrl ? `${settings.logoUrl}${settings.logoUrl.includes('?') ? '&' : '?'}tr=w-300,f-auto,q-80` : "/logo.png"} 
+              src={settings.logoUrl ? `${settings.logoUrl}${settings.logoUrl.includes('?') ? '&' : '?'}tr=w-500,f-auto,q-90` : "/logo.png"} 
               alt={`${settings.storeName} Logo`} 
               fill
               loading="eager"
               fetchPriority="high"
               unoptimized={true}
-              sizes="160px"
-              className="object-contain object-left" 
+              sizes="224px"
+              className="object-contain object-left mix-blend-multiply" 
             />
           </Link>
         </div>
